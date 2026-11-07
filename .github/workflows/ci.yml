@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile
+        run: python -m compileall -q tiiny_ui.py tiinyui
+      - name: Start the panel (no device, no CLI) and load the page
+        run: |
+          python tiiny_ui.py --help > /dev/null
+          python tiiny_ui.py --no-browser --port 8765 > panel.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8765/__tiiny__ && break; sleep 1; done
+          curl -sf http://127.0.0.1:8765/ | grep -q "<title>Tiiny Control Panel</title>"
+          curl -sf -o /dev/null http://127.0.0.1:8765/static/app.js
+          curl -sf -o /dev/null http://127.0.0.1:8765/static/app.css
+          # Security: the page carries no session token, and the API refuses requests without one
+          curl -sf http://127.0.0.1:8765/ | grep -q 'name="tiiny-token" content=""'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/health)" = 403
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8765/api/session)" = 401
+          # Sign in like a browser would, then check agent commands are off without --allow-commands
+          CRED=$(python -c "from pathlib import Path; from tiinyui.browserauth import BrowserAuth; print(BrowserAuth(Path.home() / '.config/tiiny-ui/browser-key').credential(8765))")
+          TOKEN=$(curl -sf -X POST -H "X-Tiiny-Credential: $CRED" http://127.0.0.1:8765/api/session | python -c "import json, sys; print(json.load(sys.stdin)['token'])")
+          curl -s -X POST -H "X-Tiiny-Token: $TOKEN" -H "Content-Type: application/json" -d '{"command": "id"}' http://127.0.0.1:8765/api/commands | grep -q "switched off"
+          kill %1
+          cat panel.log
+          ! grep -q Traceback panel.log
+
+  javascript:
+    name: JavaScript syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check every script
+        run: for f in static/*.js static/js/*.js; do node --check "$f"; done

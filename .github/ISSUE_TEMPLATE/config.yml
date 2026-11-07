@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Tiiny developer docs
+    url: https://dev.tiiny.ai/
+    about: Questions about the device itself, its API or the official tiiny command-line tool.
+  - name: Report a security problem
+    url: https://github.com/0xStian/tiiny-control-panel/security/advisories/new
+    about: Please report security problems privately, not as an issue.
