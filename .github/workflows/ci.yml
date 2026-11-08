@@ -38,6 +38,9 @@ jobs:
           CRED=$(python -c "from pathlib import Path; from tiinyui.browserauth import BrowserAuth; print(BrowserAuth(Path.home() / '.config/tiiny-ui/browser-key').credential(8765))")
           TOKEN=$(curl -sf -X POST -H "X-Tiiny-Credential: $CRED" http://127.0.0.1:8765/api/session | python -c "import json, sys; print(json.load(sys.stdin)['token'])")
           curl -s -X POST -H "X-Tiiny-Token: $TOKEN" -H "Content-Type: application/json" -d '{"command": "id"}' http://127.0.0.1:8765/api/commands | grep -q "switched off"
+          # The gateway for other apps answers on its own port, and only with an app key; the MCP bridge starts
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8766/v1/models)" = 401
+          python tiiny_ui.py mcp --help > /dev/null
           kill %1
           cat panel.log
           ! grep -q Traceback panel.log

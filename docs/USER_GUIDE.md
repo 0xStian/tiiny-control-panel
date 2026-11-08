@@ -216,7 +216,7 @@ Further down the dashboard you'll find **History** (charts of the last 15 minute
 2. **Import from Hugging Face.** Bring in a compatible model that isn't in the store.
 3. **NPU memory.** How full the NPU's memory is and which model takes how much. Two big models often don't fit together.
 4. **Unload idle models.** Switch this on and the panel unloads models nobody used for a while. Click the ☆ next to a model to keep it loaded anyway.
-   Models that 🎤 or 🔊 loaded just for themselves are unloaded again even with this off (see [Chat](#chat)).
+   Models that 🎤 or 🔊 or an app loaded just for themselves are unloaded again even with this off (see [Chat](#chat) and [Integrations](#integrations)).
 5. **Filters** by type: chat models, speech recognition (ASR), image, music, 3D, [decision models](#decision-models)
    (*Text Classification*) and more.
 6. **A loaded model**: **Chat** opens a chat with it, **Unload** frees its memory. The **⋮** menu has *Details*, *Interrupt current task*, *Benchmark speed*, *Copy model ID* and *Delete from device*.
@@ -544,19 +544,57 @@ You can also add your own tools as **MCP servers**. Here you connect, check and 
 
 ### Integrations
 
-Your Tiiny speaks the same language as OpenAI, Anthropic (Claude) and Ollama, so many apps and tools can use it
-directly. They must be on your own network: cloud services can't reach your Tiiny.
+Your Tiiny speaks the same language as OpenAI, Anthropic (Claude) and Ollama, so many apps can use it. Apps on your
+computer, AI assistants and your own code connect through the panel's **gateway** at `http://127.0.0.1:8766`, each
+with its own key. Cloud services can't reach your Tiiny.
 
 ![Integrations](images/integrations.png)
 
-1. **Addresses** to give an app (OpenAI-compatible, Anthropic-compatible, Ollama-compatible), and which model the examples use.
-2. **API key.** Hidden until you press **Reveal**, so it doesn't end up in a screenshot. **Copy** copies it.
-3. **Test** each kind of API with one click, decision models too.
-4. **Ready-to-copy setups**, already filled in:
-   - **Code:** OpenAI SDK (Python, JavaScript), curl, Anthropic SDK, LangChain, LlamaIndex.
-   - **Decision models (System One):** curl and Python for `/v1/systemone`.
+1. **Apps that use your Tiiny.** The gateway's address and whether it's running.
+   - **Add an app:** pick the app (Claude Code, Cursor, Open WebUI, …), what it may use and how it loads models. You get
+     its key, shown only this once, with the app's setup filled in.
+   - **Each app** shows when it was last used, how much, and what it may use. **Setup** shows its setup again (with a
+     placeholder for the key). Its **⋮** menu edits it, makes a new key, or revokes it.
+   - **Apps on other computers in your network:** off unless you switch it on. Without `--tls-cert` and `--tls-key`, keys
+     travel unencrypted through your network.
+   - **Ollama apps without a key:** for Ollama apps that can't send one. Only chat and embeddings, only from this computer.
+2. **Test the APIs:** checks the device's OpenAI, Anthropic and Ollama APIs and decision models with one click each.
+3. **Ready-to-copy setups**, filled in with the gateway's address:
+   - **AI assistants (MCP):** Claude Code, Claude Desktop, Cursor.
+   - **Agents:** OpenClaw, Hermes Agent.
+   - **Code:** OpenAI SDK (Python, JavaScript), curl, Anthropic SDK, Ollama, LangChain, LlamaIndex.
    - **Chat apps:** Open WebUI, Obsidian Copilot, apps made for Ollama.
    - **Editors:** Continue, Zed, aider, `llm`.
+   - **Decision models (System One):** curl and Python for `/v1/systemone`.
+
+At the bottom, **Talk to the device directly (advanced)** shows the device's own address and key, for apps on other
+computers. That key can also manage the device, so use an app key when you can.
+
+**What an app may use:** chat (OpenAI chat, completions and responses, Anthropic messages, Ollama chat and generate),
+embeddings and reranking, pictures, speech (recognition and text to speech), OCR, decisions, your Vault (searching,
+and separately saving), and tools for AI assistants (MCP). An app can never load, unload or delete models directly,
+restart the device, or change its Wi-Fi, your account or connectors.
+
+**When an app asks for a model that isn't loaded**, its loading policy decides:
+- **Only models that are loaded:** it gets an error instead.
+- **Load models that fit, never unload others** (the default).
+- **Make room by unloading idle models:** the ones loaded just for a moment go first, then the least recently used.
+  Pinned and busy models never do.
+
+A model an app had to load is unloaded again 10 minutes after the app's last request (**Edit** changes that: straight
+away, 2, 30 or 60 minutes, or keep it loaded). Meanwhile its card on the Dashboard says it was loaded just for that app,
+with **Keep loaded**. While an app works, **Right now** on the Dashboard shows its name.
+
+**AI assistants (MCP).** With **Tools (MCP)** ticked, an assistant can:
+- ask a model on your Tiiny, so private text stays on your own hardware;
+- make and edit pictures, which are also saved in the Gallery;
+- transcribe recordings, read text aloud, and read the text in pictures;
+- search your Vault, and save to it if you allowed that;
+- ask decision models, and see what's loaded and what the device is doing.
+
+Assistants that start a program use `python3 tiiny_ui.py mcp`, with the key in `TIINY_KEY`. That program can also hand
+the assistant's files over by path. Others connect to `http://127.0.0.1:8766/mcp`. Either way, the panel must be
+running.
 
 ### Network
 
@@ -752,6 +790,7 @@ Do those on the computer.
 | `.previous/` in the panel's folder | The version from before the last update (only after updating from System → Tiiny Control Panel without git). |
 | `~/.config/tiiny-ui/settings.json` | Panel settings, including measured model sizes. Readable only by you. |
 | `~/.config/tiiny-ui/devices.json` | Paired phones. Only fingerprints of their logins are stored, so the file can't be used to log in. |
+| `~/.config/tiiny-ui/apps.json` | The apps that may use the gateway, with what they may use. Only fingerprints of their keys are stored. |
 | `~/.config/tiiny-ui/browser-key` | The secret the panel signs your browser in with. Readable only by you. Delete it and restart the panel to sign every browser out. |
 | `~/.local/tiiny/config.json` | The command-line tool's device address and API key. The panel only reads it. |
 
@@ -803,6 +842,22 @@ computer, use the panel at `http://127.0.0.1:8765`. On a phone, start the panel 
 **🎤 or 🔊 says there's no model for it.** Speaking needs a speech recognition model (for example Whisper), and reading
 aloud needs a text-to-speech model (for example Qwen3-TTS VoiceDesign). **Find one** opens the model store at them.
 Models made for copying a voice aren't used for reading aloud: they need a recording every time.
+
+**An app says its key isn't valid.** Check that it sends the key as `Authorization: Bearer …` (or `x-api-key`), and that
+the app wasn't revoked. Lost the key? **Integrations** → the app's **⋮** → **New key**.
+
+**An app says a model doesn't fit.** The model needs more NPU memory than is free. Unload something on the Models page,
+pick a smaller model, or let the app make room: **Integrations** → the app's **⋮** → **Edit** → **Loading models**.
+
+**The gateway says port 8766 is in use.** Another program has it. Start the panel with `--gateway-port 8770` (any free
+port), and use that address in your apps.
+
+**An Ollama app can't connect.** Many Ollama apps don't send a key. Put the app's key in its settings if it has a field
+for one, or switch on **Ollama apps without a key** under Integrations.
+
+**Open WebUI in Docker can't reach the gateway.** The gateway only answers on this computer. Start the container with
+`--network=host`, as in the setup, or switch on **Apps on other computers in your network** and use this computer's
+address.
 
 **An update says some of the panel's files were changed.** A file in the panel's folder was edited on this computer,
 so the panel won't overwrite it. In the panel's folder, run `git stash` and then `git pull`, or download the new
@@ -865,6 +920,11 @@ You can also start the panel with `--verbose`.
   itself, this panel included, shows there as "API". So the panel keeps a note of its own requests while they run (which
   chat, page or job they're for) and matches them to the device's list. That's how **Right now** on the dashboard can
   name them. The notes are kept in memory only.
+- **Making room in NPU memory.** One planner decides whether a model fits, from the NPU card's own numbers, and what
+  could be unloaded to make room. The page, background jobs, apps and tools all ask it, and models load one at a time,
+  so several apps asking at once don't trip over each other.
+- **Other apps** connect to the gateway (`127.0.0.1:8766`), which checks their key, loads the model if needed, and passes
+  the request on to your Tiiny with the device's key. Streamed answers stay streamed.
 - **Projects and pinned files** get their own search index, built with the device's embedding models.
 - **Built-in libraries.** Everything works without internet access on your computer. Three small libraries are included in `static/vendor/`: [xterm.js](https://xtermjs.org/) (MIT), Google's [model-viewer](https://modelviewer.dev/) (Apache-2.0) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT).
 

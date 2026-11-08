@@ -28,6 +28,10 @@ DEFAULTS = {
     "decision_model": "",         # the decision model features use ("" = a loaded one, else the smallest; see decide.py)
     "decisions_off": [],          # decision features switched off under System → Decision models (decide.FEATURES keys)
     "update_check_daily": False,  # ask GitHub once a day whether a new panel version is out (selfupdate.py); off until you switch it on
+    "gateway_enabled": True,      # the gateway for other apps on this computer, at 127.0.0.1:gateway_port (gateway.py); apps need a key
+    "gateway_port": 8766,
+    "gateway_lan": False,         # also listen on this computer's network address, for apps on other computers
+    "gateway_keyless_ollama": False,  # let Ollama apps that can't send a key use chat and embeddings, from this computer only
 }
 
 

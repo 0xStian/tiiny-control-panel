@@ -276,7 +276,9 @@ function idleCard(ctx) {
           onclick: () => { if (keep.has(m.id)) keep.delete(m.id); else keep.add(m.id); save({keep_loaded: [...keep]}); }}, icon('star')),
         h('strong', {class: 'spacer'}, shortName(m.id)),
         m.busy ? badge('Working', 'accent') : null,
-        st.borrowed?.[m.id] ? h('span', {title: 'Loaded just for 🎤 or 🔊 in a chat: it’s unloaded again afterwards'}, badge('Just for voice', '', 'mic')) : null,
+        st.borrowed?.[m.id] ? (st.borrowed[m.id].for === 'voice'
+          ? h('span', {title: 'Loaded just for 🎤 or 🔊 in a chat: it’s unloaded again afterwards'}, badge('Just for voice', '', 'mic'))
+          : h('span', {title: `Loaded for ${st.borrowed[m.id].for}: it’s unloaded again after a while unused`}, badge(`For ${st.borrowed[m.id].for}`, '', 'plug'))) : null,
         h('span', {class: 'small muted'}, m.idle_seconds == null ? '' : m.idle_seconds < 60 ? 'used just now' : `idle ${fmtSecs(m.idle_seconds)}`)))) : h('p', {class: 'small muted'}, 'No models are loaded right now.'),
       st.events.length ? h('details', {class: 'small'}, h('summary', {}, `Recently unloaded (${st.events.length})`),
         h('div', {class: 'stack-sm'}, st.events.slice().reverse().map(e => h('div', {}, `${fmtAgo(e.t)}: ${shortName(e.model)}${e.detail ? ` (${e.detail})` : ''}`)))) : null));

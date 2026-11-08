@@ -61,7 +61,7 @@ from pathlib import Path
 if os.name == "nt":  # the in-page terminal needs a Unix pseudo-terminal
     sys.exit("Tiiny Control Panel runs on Linux and macOS. Windows isn't supported yet.")
 
-from tiinyui import VERSION, activity, backup, commands, decide, firmware, history, launcher, selfupdate, webfetch, websearch
+from tiinyui import VERSION, activity, backup, commands, decide, firmware, gateway, history, launcher, mcp, npu, selfupdate, tools, webfetch, websearch
 from tiinyui.browserauth import CODE_TTL, STORAGE_KEY, BrowserAuth
 from tiinyui.clitools import Runtime
 from tiinyui.common import BORROWED, USAGE, BadRequest, DeviceError, clamp_int, data_dir, error_message, guess_mime, mask, safe_name, valid_id
@@ -101,6 +101,7 @@ METRICS: Metrics
 PAIRING: Pairing
 BROWSER: BrowserAuth
 HTTPD = None
+GATEWAY = None  # the gateway for other apps (tiinyui/gateway.py), started in main()
 LAN = {"server": None, "ip": "", "port": 0, "error": ""}
 LAN_LOCK = threading.Lock()
 TLS = {}
@@ -119,7 +120,8 @@ RISKY_MIME = ("text/html", "image/svg+xml", "application/xhtml+xml", "text/xml",
 # What paired phones may not do: change the panel, browse or read this computer's files, run the tiiny CLI
 # (it takes file paths), see the API key. They control the device and use the panel's features.
 LAN_FORBIDDEN = ("/api/lan", "/api/shutdown", "/api/launcher", "/api/settings", "/api/device/key", "/api/fs/",
-                 "/api/cli", "/api/pty", "/api/session", "/api/commands", "/api/files/", "/api/update", "/api/backup")
+                 "/api/cli", "/api/pty", "/api/session", "/api/commands", "/api/files/", "/api/update", "/api/backup",
+                 "/api/apps", "/api/gateway")
 # Settings that decide which program the panel runs; only changeable when starting it (--tiiny, --cli-config).
 STARTUP_ONLY_SETTINGS = ("tiiny_bin", "cli_config")
 START_ARGS = []  # the start-up options to repeat in the app-menu entry (--tiiny, --cli-config, --port, TLS)
@@ -233,6 +235,15 @@ class Handler(BaseHTTPRequestHandler):
         ("GET", r"/api/metrics/speed", "api_metrics_speed"),
         ("GET", r"/api/metrics/idle", "api_metrics_idle"),
         ("POST", r"/api/models/borrowed", "api_models_borrowed"),
+        # apps that use the Tiiny through the gateway (this computer only: in LAN_FORBIDDEN)
+        ("GET", r"/api/apps", "api_apps"),
+        ("POST", r"/api/apps", "api_app_create"),
+        ("PATCH", r"/api/apps/([\w-]+)", "api_app_update"),
+        ("POST", r"/api/apps/([\w-]+)/key", "api_app_key"),
+        ("DELETE", r"/api/apps/([\w-]+)", "api_app_delete"),
+        ("GET", r"/api/gateway", "api_gateway"),
+        ("POST", r"/api/gateway", "api_gateway_set"),
+        ("GET", r"/api/npu/plan", "api_npu_plan"),
         # meetings
         ("GET", r"/api/meetings", "api_meetings"),
         ("POST", r"/api/meetings", "api_meeting_create"),
@@ -553,6 +564,8 @@ class Handler(BaseHTTPRequestHandler):
             body["decisions_off"] = [f for f in body["decisions_off"] if f in decide.FEATURES]
         changes = {k: v for k, v in body.items() if k in Settings.FIELDS}
         SETTINGS.update(changes)
+        if GATEWAY and any(k.startswith("gateway_") for k in changes):
+            GATEWAY.apply()
         self.api_health(q)
 
     def api_device_key(self, q):
@@ -1336,7 +1349,10 @@ class Handler(BaseHTTPRequestHandler):
 
         def work(job):
             job.update(message="Restoring…")
-            return backup.restore(STORE, SETTINGS, path, mode=mode, with_settings=bool(body.get("settings")), job=job)
+            out = backup.restore(STORE, SETTINGS, path, mode=mode, with_settings=bool(body.get("settings")), job=job)
+            if out.get("settings") and GATEWAY:
+                GATEWAY.apply()   # restored gateway settings take effect now
+            return out
         self.send_json(200, JOBS.start("backup", "Restoring the panel's data", work, {"action": "restore"}).info())
 
     # -- API: performance history -------------------------------------------------------------
@@ -1351,6 +1367,65 @@ class Handler(BaseHTTPRequestHandler):
                              "keep_loaded": SETTINGS.get("keep_loaded") or [], "models": METRICS.idle_status(),
                              "events": [e for e in list(METRICS.events)[-50:] if e["kind"] == "auto-unload"],
                              "borrowed": METRICS.borrowed_status()})
+
+    # -- API: apps that use the Tiiny through the gateway (tiinyui/gateway.py) -------------------------------------
+    def api_apps(self, q):
+        self.send_json(200, {"apps": GATEWAY.apps.list(), "gateway": GATEWAY.status(), "scopes": gateway.SCOPES,
+                             "unload_choices": list(gateway.UNLOAD_CHOICES),
+                             "bridge": {"python": sys.executable, "script": str(APP_DIR / "tiiny_ui.py")}})   # for stdio MCP setups
+
+    def api_app_create(self, q):
+        try:
+            app, key = GATEWAY.apps.create(self.read_json())
+        except ValueError as e:
+            raise BadRequest(str(e))
+        self.send_json(200, {"app": app, "key": key, "gateway": GATEWAY.status()})
+
+    def api_app_update(self, aid, q):
+        try:
+            self.send_json(200, {"app": GATEWAY.apps.update(aid, self.read_json())})
+        except ValueError as e:
+            raise BadRequest(str(e))
+        except KeyError:
+            raise BadRequest("That app isn't there any more.")
+
+    def api_app_key(self, aid, q):
+        self.read_json()
+        try:
+            app, key = GATEWAY.apps.new_key(aid)
+        except KeyError:
+            raise BadRequest("That app isn't there any more.")
+        self.send_json(200, {"app": app, "key": key})
+
+    def api_app_delete(self, aid, q):
+        self.send_json(200, {"ok": GATEWAY.apps.revoke(aid)})
+
+    def api_gateway(self, q):
+        self.send_json(200, GATEWAY.status())
+
+    def api_gateway_set(self, q):
+        body = self.read_json()
+        changes = {f"gateway_{k}": bool(body[k]) for k in ("enabled", "lan", "keyless_ollama") if k in body}
+        if "port" in body:
+            port = clamp_int(body["port"], 1024, 65535, 0)
+            if not port or (HTTPD and port == HTTPD.server_address[1]):
+                raise BadRequest("Choose a free port between 1024 and 65535, other than the panel's own.")
+            changes["gateway_port"] = port
+        SETTINGS.update(changes)
+        GATEWAY.apply()
+        self.send_json(200, GATEWAY.status())
+
+    def api_npu_plan(self, q):
+        """Whether a model fits, and what could be unloaded to make room: the page's "Make room" dialog asks this
+        (tiinyui/npu.py), so it sees the card's real numbers and what's busy right now."""
+        model = q.get("model", [""])[0]
+        if not model or len(model) > 300:
+            raise BadRequest("Which model?")
+        protect = [x for x in q.get("protect", [""])[0].split(",") if x][:20]
+        try:
+            self.send_json(200, npu.plan(model, protect))
+        except DeviceError as e:
+            self.send_json(200, {"error": str(e)})
 
     def api_models_borrowed(self, q):
         """🎤 and 🔊 borrow a model they have to load, and give it back when they're done; the panel then unloads it
@@ -1675,7 +1750,9 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
-    global SETTINGS, RT, DEVCONN, STORE, PROJECTS, REVIEWS, GALLERY, STUDIO, MEETINGS, METRICS, PAIRING, BROWSER, HTTPD, VERBOSE, ALLOW_COMMANDS
+    global SETTINGS, RT, DEVCONN, STORE, PROJECTS, REVIEWS, GALLERY, STUDIO, MEETINGS, METRICS, PAIRING, BROWSER, HTTPD, VERBOSE, ALLOW_COMMANDS, GATEWAY
+    if sys.argv[1:2] == ["mcp"]:   # python3 tiiny_ui.py mcp: the stdio bridge for AI assistants (tiinyui/mcp.py)
+        sys.exit(mcp.bridge_main(sys.argv[2:]))
     ap = argparse.ArgumentParser(description="Local web interface for your Tiiny device.")
     ap.add_argument("--port", type=int, default=int(os.environ.get("TIINY_UI_PORT", "8765")))
     ap.add_argument("--host", default="127.0.0.1",
@@ -1688,6 +1765,8 @@ def main():
     ap.add_argument("--verbose", action="store_true", help="log every HTTP request")
     ap.add_argument("--tls-cert", default="", help="certificate (PEM) for HTTPS on the local-network listener used by phones")
     ap.add_argument("--tls-key", default="", help="private key (PEM) for --tls-cert")
+    ap.add_argument("--gateway-port", type=int, default=0,
+                    help=f"port of the gateway other apps on this computer use (default {gateway.DEFAULT_PORT}; see Integrations)")
     args = ap.parse_args()
     VERBOSE = args.verbose
 
@@ -1712,6 +1791,8 @@ def main():
         START_ARGS.extend(["--tls-cert", os.path.abspath(args.tls_cert), "--tls-key", os.path.abspath(args.tls_key)])
     if args.allow_commands:
         START_ARGS.append("--allow-commands")
+    if args.gateway_port:
+        START_ARGS.extend(["--gateway-port", str(args.gateway_port)])
     ALLOW_COMMANDS = bool(args.allow_commands)
     SETTINGS = Settings(SETTINGS_PATH)
     if args.cli_config:
@@ -1726,6 +1807,7 @@ def main():
     STUDIO = Studio(STORE, DEVCONN, JOBS, RT, GALLERY)
     MEETINGS = Meetings(STORE, DEVCONN, JOBS, RT, PROJECTS)
     METRICS = Metrics(DEVCONN, SETTINGS, JOBS, STORE.root / "metrics")
+    npu.setup(DEVCONN, SETTINGS, METRICS)
     PAIRING = Pairing(CONFIG_DIR / "devices.json")
     if bool(args.tls_cert) != bool(args.tls_key):
         sys.exit("--tls-cert and --tls-key go together.")
@@ -1751,6 +1833,13 @@ def main():
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/" if loopback else f"http://{args.host}:{port}/"
     dev = DEVCONN.resolve()
+    if args.gateway_port:
+        SETTINGS.override("gateway_port", args.gateway_port)
+    GATEWAY = gateway.Gateway(DEVCONN, SETTINGS, gateway.Apps(CONFIG_DIR / "apps.json"), tls=TLS, verbose=VERBOSE,
+                              lan_ip=lambda: lan_ip_towards(DEVCONN.resolve().get("address") or ""),
+                              mcp=mcp.Server(tools.Toolbox(DEVCONN, SETTINGS, GALLERY, RT)).handle)
+    GATEWAY.apply()
+    gw = GATEWAY.status()
 
     print(f"Tiiny Control Panel {VERSION}")
     print(f"  tiiny CLI : {RT.bin or 'not found (interactive features need it)'}" + (f"  ({RT.cli_version})" if RT.cli_version else ""))
@@ -1762,6 +1851,8 @@ def main():
     print(f"  open      : {url}" + ("" if args.no_browser else "  (your browser opens it, signed in)"))
     if args.no_browser:
         print(f"  sign in   : {BROWSER.link(url)}  (works once, for {CODE_TTL // 60} min; run it again for a new link)")
+    print(f"  apps      : {gw['url']}  (keys under Integrations)" if gw["running"] else
+          f"  apps      : not available ({gw['error']})" if gw["enabled"] else "  apps      : gateway switched off (Integrations)")
     if ALLOW_COMMANDS:
         print("  commands  : agent mode may run commands and read and write files here (it asks before each one)")
     if not loopback:
@@ -1791,6 +1882,7 @@ def main():
     finally:
         print("\nShutting down…")
         lan_stop()
+        GATEWAY.stop_all()
         PTYS.kill_all()
         httpd.server_close()
         shutil.rmtree(RT.work, ignore_errors=True)

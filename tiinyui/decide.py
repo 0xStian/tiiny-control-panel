@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import threading
 
-from . import device
+from . import device, npu
 from .common import DeviceError, error_message
 
 MAX_QUESTIONS = 64       # the device refuses more ("at most 64 are supported")
@@ -215,7 +215,7 @@ def ensure(info, settings, allow_load: bool = True) -> str:
             raise Unavailable(f"{short(m['id'])} doesn't fit in NPU memory next to the loaded models "
                               f"({need / 1024:.1f} GB needed, {max(0, free) / 1024:.1f} GB free).")
         try:
-            device.ensure_loaded(info, m["id"], timeout=240)
+            npu.ensure_ready(m["id"], policy="fits", info=info)
         except DeviceError as e:
             raise Unavailable(f"{short(m['id'])} couldn't be loaded: {e}")
     return m["id"]

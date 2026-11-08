@@ -64,6 +64,26 @@ Only the latest release gets security fixes.
   - **Restoring:** unsafe file names are refused, so nothing is written outside the data folder. What a restore
     replaces is set aside first.
   - **Who can do it:** only this computer.
+- **Apps use their own keys, through the gateway.**
+  - **Where:** apps connect to the panel at `127.0.0.1:8766`, not to the device. Only requests with this computer's
+    `Host` are answered (against DNS rebinding), and requests from web pages (an `http(s)` Origin) are refused, with no
+    CORS.
+  - **Keys:** each app has its own key, made under Integrations and shown once. Only a fingerprint (SHA-256) of each key
+    is stored, in `~/.config/tiiny-ui/apps.json` (readable only by you). A revoked key stops working at once. Repeated
+    wrong keys from one address make the gateway stop answering it for a while.
+  - **What a key can do:** only what you ticked for that app (chat, embeddings, pictures, speech, OCR, decisions, Vault
+    search, Vault saving, tools). Only a fixed list of the device's endpoints is passed on, so no key can load, unload or
+    delete models directly, restart the device, change its Wi-Fi or account, or reach connectors. When an app asks for a
+    model that isn't loaded, its loading policy decides: by default the model is loaded only if it fits, and nothing is
+    unloaded for it.
+  - **The device's key stays on the server.** Apps no longer need it.
+  - **Other computers:** a second listener on your network address is off unless you switch it on. Without
+    `--tls-cert` it uses plain HTTP, so keys travel unencrypted through your network. Ollama apps that can't send a key
+    can be allowed, but only from this computer, and only for chat and embeddings.
+  - **Who can manage apps:** only this computer; phones can't.
+- **Tools for AI assistants (MCP)** use the same app keys and need the "Tools (MCP)" scope, and each tool also needs its
+  own scope. The stdio bridge (`python3 tiiny_ui.py mcp`) reads the files an assistant names on behalf of the assistant
+  that started it; the panel itself never opens a path an app gives it.
 - **Private files.** Saved data is stored in `~/.local/share/tiiny-ui/` and `~/.config/tiiny-ui/`, readable only by you.
 
 Things that are **out of scope**: the Tiiny device and its firmware, the official `tiiny` command-line tool, and

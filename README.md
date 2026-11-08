@@ -40,7 +40,7 @@ only talks to your Tiiny, and nothing goes to the cloud.
 | 🎙️ **Meetings** | Live transcripts, plus notes written on your device: overview, decisions, action items and open questions. |
 | 🛡️ **Code review** | A model on your device checks a folder for security problems and bugs, with suggested fixes. Exports as SARIF. |
 | 📚 **Vault** | Upload documents and web pages, then search them by meaning. |
-| 🔌 **Integrations** | Ready-to-copy setups for apps that speak the OpenAI, Anthropic or Ollama API: Open WebUI, Continue, Zed, LangChain and more. |
+| 🔌 **Integrations** | Give each app its own key. Apps that speak the OpenAI, Anthropic or Ollama API, and AI assistants like Claude Code and Cursor (MCP), use your Tiiny through the panel; models load when an app needs them and are unloaded again afterwards. Filled-in setups for Claude Code, Cursor, OpenClaw, Hermes Agent, Open WebUI, Continue, Zed and more. |
 | 📈 **Dashboard** | What the device is working on right now and for whom, live NPU, memory and CPU use, history charts, and how fast each model answers. |
 | 📱 **Phone and app** | A phone layout, QR-code pairing, install as an app, desktop notifications. |
 | ⚙️ **Device and panel** | Wi-Fi, connectors, account, firmware updates, power, and a real terminal for any `tiiny` command. Backups of the device and of the panel's own data, and updates for the panel itself. |
@@ -108,7 +108,8 @@ More, with every button explained: [the user guide](docs/USER_GUIDE.md).
 ## Privacy and security
 
 - **Nothing leaves your network** unless you ask. It talks to your Tiiny, to web pages you have it read, to a search engine when the agent searches the web (only the search words), and to GitHub when you check for a new version of the panel. No analytics, no fonts or scripts from other sites.
-- **Only your browser can use it.** It listens on `127.0.0.1` and only works in a browser it has signed in, so other programs, user accounts and websites can't control your device.
+- **Only your browser can use the panel.** It listens on `127.0.0.1` and only works in a browser it has signed in, so other programs, user accounts and websites can't control your device.
+- **Apps get their own keys.** Other apps on your computer use your Tiiny through the panel's gateway (`127.0.0.1:8766`), each with a key you can limit and revoke. No key can manage the device, and web pages can't use the gateway.
 - **Your API key stays put.** It comes from the `tiiny` tool's own config and isn't copied anywhere.
 - **Phones need pairing.** Phone access is off until you pair a phone with a QR code. Paired phones can't reach your computer's files, settings or terminals, and you can remove one any time.
 - **The agent asks first.** Agent actions that change something or go to the internet need your approval. Running commands on your computer is off unless you start the panel with `--allow-commands`, and then every command still asks.

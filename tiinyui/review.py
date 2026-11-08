@@ -16,7 +16,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import decide, device, jobs
+from . import decide, device, jobs, npu
 from .common import BadRequest, DeviceError, estimate_tokens, new_id, now
 from .files import CODE_EXTS, read_text, scan_folder
 
@@ -482,7 +482,7 @@ class Reviews:
         root = Path(rec["root"])
         model = opts["model"]
         try:
-            device.ensure_loaded(info, model, job=job)
+            npu.ensure_ready(model, policy="fits", job=job, info=info)
         except DeviceError as e:
             if not device_up(info):
                 raise DeviceGone(str(e)) from None

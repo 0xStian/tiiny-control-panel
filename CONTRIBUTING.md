@@ -41,6 +41,9 @@ Edit a file in `static/` and reload the page. Edit a Python file and restart the
 | `tiinyui/decide.py` | Decision models (`/v1/systemone`): checks questions, picks and loads the model only when it fits, normalises answers. Every caller falls back when it's `Unavailable`. |
 | `tiinyui/firmware.py` | TiinyOS updates through the device's upgrade service (the v2 API its own dashboard uses). |
 | `tiinyui/activity.py` | What the device is doing right now (the dashboard's Right now card). It keeps a note of the panel's own model requests while they run (`track`; `device.call` and the chat and proxy routes do this) and pairs them with the device's task list, where every unnamed program shows as "API". |
+| `tiinyui/npu.py` | The NPU planner: whether a model fits (from the card's real numbers), what may be unloaded to make room, and loading, one at a time under one lock. Everything on the panel's side that loads models uses it (`ensure_ready`, `use`). |
+| `tiinyui/gateway.py` | The gateway other apps use (`127.0.0.1:8766`): per-app keys (`apps.json`, hashed), scopes, model names, on-demand loading and forwarding, with streams kept as streams. |
+| `tiinyui/mcp.py`, `tools.py` | MCP for AI assistants: the protocol (the stateless 2026-07-28 style and the older `initialize` handshake), the stdio bridge, and the tools. |
 | `tiinyui/selfupdate.py`, `backup.py` | Updating the panel itself from GitHub releases (git pull or the release ZIP, then a restart), and the ZIP backup of the panel's own data. |
 | `tiinyui/websearch.py`, `commands.py`, `history.py` | Agent web search (DuckDuckGo, Brave Search, SearXNG); commands and files on this computer (`--allow-commands` only); searching saved chats, meetings and the Gallery. |
 | `static/index.html`, `static/app.css` | The page and all of its styles (desktop, then phones at the end). |

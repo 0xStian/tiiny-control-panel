@@ -12,7 +12,7 @@ import json
 import re
 import time
 
-from . import decide, device
+from . import decide, device, npu
 from .common import BadRequest, DeviceError, estimate_tokens, safe_name
 
 EDITABLE = ("title", "notes", "language", "asr_model", "status", "duration", "summary_md", "source", "file_name")
@@ -190,7 +190,7 @@ class Meetings:
 
     def _summary_job(self, job, mid, model):
         info = self.devconn.resolve()
-        device.ensure_loaded(info, model, job=job)
+        npu.ensure_ready(model, policy="fits", job=job, info=info)
         rec = self.get(mid)
         text = transcript_text(rec)
         notes = (rec.get("notes") or "").strip()

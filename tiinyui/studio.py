@@ -18,7 +18,7 @@ import urllib.parse
 import zipfile
 from pathlib import Path
 
-from . import activity, decide, device, jobs
+from . import activity, decide, device, jobs, npu
 from .common import BadRequest, DeviceError, error_message, guess_mime, safe_name, valid_id
 from .jobs import Cancelled
 
@@ -366,7 +366,7 @@ class Studio:
     def _music_job(self, job, spec, mode, title):
         info = self.devconn.resolve()
         model = spec["model"]
-        device.ensure_loaded(info, model, job=job)
+        npu.ensure_ready(model, policy="fits", job=job, info=info)
         cfg = {}
         src_cfg = spec.get("config") if isinstance(spec.get("config"), dict) else {}
         parent = None
@@ -506,7 +506,7 @@ class Studio:
     def _3d_job(self, job, spec, img_path, img_name, title, cutout=None):
         info = self.devconn.resolve()
         model = spec["model"]
-        device.ensure_loaded(info, model, job=job)
+        npu.ensure_ready(model, policy="fits", job=job, info=info)
         opts = spec.get("options") if isinstance(spec.get("options"), dict) else {}
         caps = (device.call_ok(info, "core", "GET", "/v1/3d/capabilities", timeout=30) or {})
         caps = caps.get("data", caps) or {}
@@ -684,7 +684,7 @@ class Studio:
     def _video_job(self, job, spec, title):
         info = self.devconn.resolve()
         model = spec["model"]
-        device.ensure_loaded(info, model, job=job)
+        npu.ensure_ready(model, policy="fits", job=job, info=info)
         fields = {"model": model, "prompt": str(spec["prompt"]).strip()}
         for k in ("negative_prompt", "size", "seconds", "frames", "fps", "steps", "seed", "guidance_scale"):
             v = spec.get(k)

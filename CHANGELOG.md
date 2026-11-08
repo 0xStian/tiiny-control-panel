@@ -5,6 +5,42 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-08
+
+### Added
+
+- **Apps get their own keys.** Apps on your computer that speak the OpenAI, Anthropic or Ollama API now connect to the
+  panel's gateway at `http://127.0.0.1:8766` instead of to the device:
+  - **One key per app,** made under **Integrations**, with what it may use (chat, embeddings, pictures, speech, OCR,
+    decisions, your Vault, tools) and revocable any time. Apps no longer need the device's own key, which can also
+    manage the device.
+  - **Models load when an app asks for them:** by default only if they fit, or after unloading idle models if you allow
+    that for the app. They're unloaded again 10 minutes after the app's last request, unless you choose otherwise.
+  - **You see who's working:** the Dashboard names the app while it works, and Integrations shows each app's use.
+  - **Ollama apps** get the model list and details they ask for. Ones that can't send a key can be allowed, from this
+    computer only.
+  - **Apps on other computers** in your network, if you switch that on.
+- **Your Tiiny's tools for AI assistants (MCP).** Claude Code, Claude Desktop, Cursor, OpenClaw, Hermes Agent and other
+  MCP clients can:
+  - ask a local model;
+  - make and edit pictures;
+  - transcribe recordings, read text aloud, and read the text in pictures;
+  - search your Vault and save to it;
+  - ask decision models and check the device.
+
+  They connect over HTTP (`/mcp` on the gateway) or stdio (`python3 tiiny_ui.py mcp`). Both the current MCP version
+  (2026-07-28) and the earlier ones work.
+- **Setups for each app,** filled in with the gateway's address and the app's key: Claude Code, Claude Desktop, Cursor,
+  OpenClaw, Hermes Agent, Open WebUI, Continue, Zed, aider, `llm`, Obsidian Copilot, Ollama apps and your own code.
+
+### Changed
+
+- **One planner for NPU memory.** Whether a model fits, and what could be unloaded to make room, is now decided in one
+  place, from the NPU card's own numbers. That place serves the page, background jobs (Studio, code reviews, projects,
+  meetings, decisions), apps and tools. Models load one at a time, so several apps asking at once don't trip over each
+  other. A job that can't fit now says plainly why, instead of failing at the device.
+- **Integrations** now puts the device's own key under "Talk to the device directly (advanced)".
+
 ## [1.1.0] - 2026-11-08
 
 ### Added
@@ -130,6 +166,7 @@ The first public release.
 - **A safer subset for phones.** No panel settings, terminals, folder browsing, local folders in reviews and projects,
   API key, or fetching local-network addresses.
 
-[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/0xStian/tiiny-control-panel/releases/tag/v1.0.0

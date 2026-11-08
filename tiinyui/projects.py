@@ -17,7 +17,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import decide, device, rag, textextract, webfetch
+from . import decide, device, npu, rag, textextract, webfetch
 from .common import BadRequest, DeviceError, estimate_tokens, new_id, now, safe_name
 from .files import CODE_EXTS, read_text, scan_folder
 
@@ -284,7 +284,7 @@ class Projects:
             self.store.update("projects", pid, lambda r: r.update(indexed_at=now(), embed_model=model))
             job.update(message="Everything is up to date.", progress=1)
             return {"chunks": len(idx.chunks), "updated": 0}
-        device.ensure_loaded(info, model, job=job)
+        npu.ensure_ready(model, policy="fits", job=job, info=info)
         idx.meta["model"] = model
         done_chunks = 0
         for n, (key, digest, loader, meta) in enumerate(todo, 1):
@@ -307,7 +307,7 @@ class Projects:
         if not idx.chunks:
             return []
         info = self.devconn.resolve()
-        device.ensure_loaded(info, idx.meta["model"], timeout=180)
+        npu.ensure_ready(idx.meta["model"], policy="fits", info=info)
         qvec = device.embed(info, idx.meta["model"], [QUERY_PREFIX + query])[0]
         return idx.search(qvec, k)
 

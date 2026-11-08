@@ -1052,15 +1052,19 @@ async function npuUsedMb() {
 
 /* Ask which loaded models to unload so `id` fits. Resolves true to go ahead, false to cancel. */
 async function makeRoomFor(id, {force = false, reason = '', protect = new Set()} = {}) {
+  // The panel server's plan (tiinyui/npu.py) knows the card's real free memory and what's busy right now.
+  let sp = null;
+  try { sp = await api(`/api/npu/plan?model=${encodeURIComponent(id)}&protect=${encodeURIComponent([...protect].join(','))}`); } catch { sp = null; }
+  if (sp?.error) sp = null;
   const {need, used, fits} = fitCheck(id);
-  if (fits && !force) return true;
+  if ((sp ? sp.fits : fits) && !force) return true;
   const keep = new Set(S.health?.settings?.keep_loaded || []);
   const loaded = [...S.running].filter(r => r !== id && !protect.has(r)).map(r => ({id: r, share: npuShare(r), last: LAST_USED.get(r) || 0, keep: keep.has(r)}))
     .sort((a, b) => a.last - b.last);
   if (!loaded.length) return !protect.size;
   let free = 100 - used;
-  const suggest = new Set();
-  for (const m of loaded) { if (free >= need) break; if (m.keep) continue; suggest.add(m.id); free += m.share; }
+  const suggest = new Set((sp?.unload || []).filter(x => loaded.some(m => m.id === x)));
+  if (!suggest.size) for (const m of loaded) { if (free >= need) break; if (m.keep) continue; suggest.add(m.id); free += m.share; }
   if (force && !suggest.size && loaded.length) suggest.add(loaded.find(m => !m.keep)?.id || loaded[0].id);
   return new Promise(resolve => {
     let done = false;
@@ -1116,8 +1120,9 @@ function borrowedNote(id) {
   const b = S.borrowed[id];
   if (!b) return null;
   const when = b.after ? `${fmtSecs(b.after)} after it was last used` : 'as soon as nothing is using it';
+  const who = b.for === 'voice' ? '🎤 or 🔊 in a chat' : b.for;   // or the app that asked for it (Integrations)
   return h('div', {class: 'model-borrowed'}, icon('clock'),
-    h('span', {class: 'spacer'}, `Loaded just for 🎤 or 🔊 in a chat, so it’s unloaded again ${when}.`),
+    h('span', {class: 'spacer'}, `Loaded just for ${who}, so it’s unloaded again ${when}.`),
     btn('Keep loaded', async () => { if (await keepBorrowed(id)) toast(`${shortName(id)} stays loaded`, 'ok', {timeout: 2500}); }, {small: true, kind: 'ghost'}));
 }
 
