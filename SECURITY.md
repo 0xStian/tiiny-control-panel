@@ -34,7 +34,8 @@ Only the latest release gets security fixes.
 - **Phones must be paired, and get less.** The phone listener is off by default. Each pairing link works once, for 5
   minutes. Paired devices still need the session token. Only fingerprints of their logins are stored, and you can
   remove a device at any time. Phones can't change panel settings, browse or read the computer's folders, run the
-  `tiiny` tool or a terminal, reveal the API key, or make the panel fetch addresses on your local network. Without
+  `tiiny` tool or a terminal, reveal the API key, update the panel, back up or restore its data, or make the panel
+  fetch addresses on your local network. Without
   `--tls-cert`, phones use plain HTTP, so only use it on a network you trust.
 - **The agent asks first.** Agent actions that change something or go to the internet need your approval. Text from
   web pages and search results is marked as untrusted for the model. Web searches send only the search words to the
@@ -47,6 +48,22 @@ Only the latest release gets security fixes.
 - **You choose the agent's tools.** Each tool can be switched off under System → Agent tools. A switched-off tool is
   never offered to the model, and the panel's endpoints that exist only for the agent (history, commands, files) refuse
   it too. The switches can only take tools away, never add the computer tools without `--allow-commands`.
+- **Updates only when you ask, and only from this repository.**
+  - **Checking:** "Check for updates" (or the daily check, if you switch it on) asks GitHub's API for the latest
+    release of `0xStian/tiiny-control-panel`, with a generic User-Agent and nothing about you.
+  - **A git copy:** it runs `git pull --ff-only` with fixed arguments, and refuses if the panel's files were changed
+    on this computer.
+  - **Any other copy:** it downloads the release ZIP over HTTPS and checks it before using it. The ZIP must contain only
+    the panel's own files: no paths outside its folder, no links, and the version the release says it is. The old
+    files are kept in `.previous/`.
+  - **What it never touches:** your data, and any other file in the panel's folder.
+  - **Who can do it:** only this computer; phones can't.
+- **Backups without secrets.**
+  - **What's left out:** a backup of the panel's data never contains the browser key, paired phones, the device's API
+    key or a Brave Search key.
+  - **Restoring:** unsafe file names are refused, so nothing is written outside the data folder. What a restore
+    replaces is set aside first.
+  - **Who can do it:** only this computer.
 - **Private files.** Saved data is stored in `~/.local/share/tiiny-ui/` and `~/.config/tiiny-ui/`, readable only by you.
 
 Things that are **out of scope**: the Tiiny device and its firmware, the official `tiiny` command-line tool, and

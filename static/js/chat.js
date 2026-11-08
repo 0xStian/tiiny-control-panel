@@ -7,6 +7,8 @@ const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|xml|html?|log|ini|
 const DOC_EXT = /\.(pdf|docx|docm|pptx|xlsx|xlsm|odt|odp|ods|epub)$/i;
 /* Message -> open or closed, once you've clicked its thinking box; it then stays that way through re-renders. */
 const ThinkOpen = new WeakMap();
+const ReadKeys = new WeakMap();   // a key per answer for its 🔊 button (voice.js)
+const readKey = m => ReadKeys.get(m) || (ReadKeys.set(m, uid()), ReadKeys.get(m));
 
 /* A streaming reply is rebuilt on every frame. Patch the message on screen instead of replacing it, keeping the
    same thinking box: a new box would start at the top again, so you couldn't scroll down to the newest thoughts.
@@ -346,6 +348,7 @@ function viewChat(root, ctx) {
   const stopBtn = h('button', {class: 'btn icon-only', type: 'button', title: 'Stop generating', hidden: true}, icon('stop'));
   const vaultChk = h('input', {type: 'checkbox'});
   const profileChk = h('input', {type: 'checkbox'});
+  const mic = voiceInput({textarea, protect: () => (current?.model && current.model !== 'default' ? current.model : null)});   // voice.js
   const hint = h('span', {class: 'faint'});
 
   const chatsBtn = btn('Chats', () => setSide(!layout.classList.contains('side-open')), {small: true, kind: 'ghost', icon: 'list', title: 'Your chats'});
@@ -362,6 +365,7 @@ function viewChat(root, ctx) {
           {label: 'Rename chat', icon: 'edit', fn: renameChat},
           {label: 'Move to a project…', icon: 'folder', fn: moveChat},
           {label: 'Copy as Markdown', icon: 'copy', fn: () => copyText(chatMarkdown(current), 'Chat copied')},
+          {label: 'Voice…', icon: 'speaker', fn: voiceSettings},
           {label: 'Agent: ask before actions', icon: 'shield', fn: () => { current.agentAuto = false; current.agentAllow = {}; saveChat(current); toast('Agent will ask before it changes anything', 'ok'); }},
           {label: 'Agent tools…', icon: 'settings', fn: () => go('system?section=agent-tools')},
           {label: 'Agent: never ask in this chat', icon: 'bolt', fn: () => { current.agentAuto = true; saveChat(current); toast('Agent actions run without asking in this chat', 'info', S.health?.commands?.enabled ? {detail: 'Commands and file changes on this computer still ask every time.'} : {}); }},
@@ -370,7 +374,7 @@ function viewChat(root, ctx) {
         ])),
       notice, scroll,
       h('div', {class: 'composer'}, h('div', {class: 'composer-inner'}, attachRow,
-        h('div', {class: 'composer-box'}, h('button', {class: 'btn ghost icon-only', type: 'button', title: 'Attach images, text files or documents', onclick: () => fileInput.click()}, icon('clip')), textarea, stopBtn, sendBtn),
+        h('div', {class: 'composer-box'}, h('button', {class: 'btn ghost icon-only', type: 'button', title: 'Attach images, text files or documents', onclick: () => fileInput.click()}, icon('clip')), mic.el, textarea, stopBtn, sendBtn),
         h('div', {class: 'composer-opts'},
           h('label', {title: 'Search your Vault for passages related to each message and give them to the model'}, vaultChk, icon('folder'), 'Use my Vault'),
           h('label', {title: 'Give the model your occupation and preferences from Account → Profile'}, profileChk, icon('user'), 'Use my profile'),
@@ -389,6 +393,7 @@ function viewChat(root, ctx) {
   const onKey = e => { if (e.key === 'Escape' && layout.classList.contains('side-open')) setSide(false); };
   document.addEventListener('keydown', onKey);
   ctx.onCleanup(() => document.removeEventListener('keydown', onKey));
+  ctx.onCleanup(() => { stopReading(); mic.cancel(); });   // leaving the chat stops reading aloud and recording
 
   /* ---- data ---- */
   async function boot() {
@@ -627,6 +632,7 @@ function viewChat(root, ctx) {
       (m.notes || []).map(n => h('div', {class: 'msg-note'}, n)),
       !live ? h('div', {class: 'msg-meta'}, meta.join(' · '),
         answer ? h('button', {class: 'btn ghost sm', type: 'button', onclick: () => copyText(answer, 'Reply copied')}, icon('copy'), 'Copy') : null,
+        answer ? readAloudButton(answer, readKey(m)) : null,
         isLast ? h('button', {class: 'btn ghost sm', type: 'button', onclick: regenerate}, icon('refresh'), 'Regenerate') : null) : null));
   }
 
@@ -764,6 +770,7 @@ function viewChat(root, ctx) {
   }
 
   async function send() {
+    if (mic.busy()) { mic.finish(); return; }   // still recording: write it down first, then you send it
     const text = textarea.value.trim();
     if (!text && !attachments.length) return;
     if (ChatUI.streaming) { toast('Wait for the current reply to finish, or stop it first', 'info'); return; }
@@ -863,7 +870,15 @@ function viewChat(root, ctx) {
   vaultChk.addEventListener('change', () => { current.useVault = vaultChk.checked; saveChat(current); });
   profileChk.addEventListener('change', () => { current.useProfile = profileChk.checked; chatPrefs({useProfile: profileChk.checked}); saveChat(current); });
   textarea.addEventListener('input', autosize);
-  textarea.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touch) { e.preventDefault(); send(); } });
+  textarea.addEventListener('keydown', e => {
+    if (mic.busy() && !e.isComposing && (e.key === 'Enter' || e.key === 'Escape')) {   // recording: Enter writes it down, Esc throws it away
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Enter') mic.finish(); else mic.cancel();
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touch) { e.preventDefault(); send(); }
+  });
   textarea.addEventListener('paste', e => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); addFiles(files); } });
   fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
   sendBtn.addEventListener('click', send);

@@ -10,6 +10,7 @@ import base64
 import json
 import re
 import shutil
+import struct
 import tempfile
 import threading
 import time
@@ -70,6 +71,35 @@ def run_abortable(owner, fn, *args, **kwargs):
 DEVICE_UPLOAD_LIMIT = 200 * 1024 * 1024
 # /3d/capabilities names some inputs differently from the upload field the server reads
 FORM_FIELD = {"material_artifact": "material", "mesh_glb": "mesh"}
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def png_has_alpha(path) -> bool:
+    """A PNG that can be transparent: grey+alpha or RGBA, or a palette/colour key with a tRNS chunk."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(8) != PNG_SIGNATURE:
+                return False
+            while True:
+                head = f.read(8)
+                if len(head) < 8:
+                    return False
+                n, kind = struct.unpack(">I4s", head)
+                if kind == b"IHDR":
+                    ihdr = f.read(n)
+                    if len(ihdr) < 13:
+                        return False
+                    if ihdr[9] in (4, 6):  # colour type: grey + alpha, RGBA
+                        return True
+                    f.seek(4, 1)
+                    continue
+                if kind == b"tRNS":
+                    return True
+                if kind in (b"IDAT", b"IEND"):
+                    return False
+                f.seek(n + 4, 1)
+    except OSError:
+        return False
 
 
 def compact_zip(path: Path) -> Path:
@@ -439,11 +469,14 @@ class Studio:
             raise BadRequest("Choose an image first")
         if not spec.get("model"):
             raise BadRequest("Choose a 3D model")
+        cutout, _ = self._input_file(spec, "cutout")  # the picture with its background already removed (Studio's AI cut-out)
+        if cutout and not png_has_alpha(cutout):
+            raise BadRequest("The cut-out has to be a PNG with a transparent background.")
         title = str(spec.get("title") or "").strip()
         if not title and spec.get("image_gallery_id"):
             title = self.gallery.get(str(spec["image_gallery_id"])).get("title") or ""
         title = title or _title_from(Path(name).stem.replace("_", " ").replace("-", " "), "3D model")
-        return self.jobs.start("model3d", f"Making a 3D model: {title}", lambda job: self._3d_job(job, spec, img, name, title),
+        return self.jobs.start("model3d", f"Making a 3D model: {title}", lambda job: self._3d_job(job, spec, img, name, title, cutout),
                                {"model": spec["model"], "title": title})
 
     def _3d_post(self, info, job, stage, params, files):
@@ -470,7 +503,7 @@ class Studio:
         job.meta["paused"] = action == "pause"
         job.update(log=f"{action} requested")
 
-    def _3d_job(self, job, spec, img_path, img_name, title):
+    def _3d_job(self, job, spec, img_path, img_name, title, cutout=None):
         info = self.devconn.resolve()
         model = spec["model"]
         device.ensure_loaded(info, model, job=job)
@@ -480,7 +513,7 @@ class Studio:
         stages_avail = caps.get("stages") or ["background", "shape", "simplify", "texture", "export"]
         specs = caps.get("stage_specs") or {}
         plan = [s for s in ("background", "shape", "simplify", "texture", "export") if s in stages_avail]
-        if not opts.get("remove_background", True):
+        if cutout or not opts.get("remove_background", True):  # a cut-out is already without its background
             plan = [s for s in plan if s != "background"]
         if not opts.get("simplify", True):
             plan = [s for s in plan if s != "simplify"]
@@ -489,6 +522,10 @@ class Studio:
         work = self._workdir()
         pool = {"image": (str(img_path), img_name)}   # artifact type -> (path, filename)
         notes = []
+        if cutout:
+            pool["image_no_bg"] = (str(cutout), "input-no-background.png")
+            by = re.sub(r"[^\w .+-]", "", str(spec.get("cutout_model") or "").split("/")[-1])[:80]
+            notes.append(f"Background removed by {by}." if by else "Background removed before the 3D steps.")
         t0 = time.time()
         try:
             for i, stage in enumerate(plan):

@@ -72,6 +72,12 @@ function fmtAgo(v) {
   return d.toLocaleDateString();
 }
 function fmtSecs(s) { s = Math.round(Number(s) || 0); return s < 90 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60 ? `${s % 60} s` : ''}`.trim(); }
+/* 872 → "872", 1931 → "1.9K", 12345 → "12K" */
+function fmtCount(n) {
+  n = Math.max(0, Math.round(Number(n) || 0));
+  try { return new Intl.NumberFormat('en', {notation: 'compact', maximumFractionDigits: 1}).format(n); }
+  catch { return n < 1000 ? String(n) : n < 1e6 ? `${+(n / 1e3).toFixed(n < 1e4 ? 1 : 0)}K` : `${+(n / 1e6).toFixed(1)}M`; }
+}
 const ACRONYMS = {id: 'ID', npu: 'NPU', ram: 'RAM', soc: 'SoC', cpu: 'CPU', gpu: 'GPU', ip: 'IP', api: 'API', url: 'URL', asr: 'ASR', tts: 'TTS', ocr: 'OCR', mcp: 'MCP', ssid: 'SSID', usb: 'USB', mb: 'MB', gb: 'GB', ipv4: 'IPv4', ipv6: 'IPv6', sn: 'SN'};
 function humanize(key) {
   const words = String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_\-.]+/g, ' ').trim().toLowerCase().split(/\s+/);
@@ -223,6 +229,7 @@ const S = {
   models: [], modelsById: new Map(), modelsAt: 0, modelsError: '',
   store: null, storeById: new Map(),
   running: new Set(), loading: new Map(),
+  borrowed: {},   // models 🎤 and 🔊 loaded just for themselves: id → {for, using, after, unload_in} (see setBorrowed)
   deviceId: '', menu: null, view: null, dropHandler: null,
 };
 const bus = new EventTarget();
@@ -889,6 +896,7 @@ async function refreshOverview() {
   S.overview = o;
   if (o) {
     if (o.running?.ok) setRunning(o.running.json);
+    setBorrowed(o.borrowed);
     const usedMb = num(o.npu?.json?.devices?.[0]?.mem_used_mb);
     if (S.running.size === 1 && usedMb && S.modelsAt && !S.loading.size) {
       const only = [...S.running][0];
@@ -1090,7 +1098,31 @@ async function makeRoomFor(id, {force = false, reason = '', protect = new Set()}
   });
 }
 
-async function loadModel(id, {quiet = false, skipFit = false, protect = new Set()} = {}) {
+/* Models 🎤 and 🔊 load just for themselves are borrowed (voice.js): the panel server unloads them again once they're
+   done with them and nothing else has used them for a while (tiinyui/common.py, Borrowed). Loading such a model for
+   anything else (borrow: false, the default) keeps it loaded, as if you had loaded it yourself. */
+function setBorrowed(b) {
+  const next = b && typeof b === 'object' && !Array.isArray(b) ? b : {};
+  const changed = Object.keys(next).sort().join('|') !== Object.keys(S.borrowed).sort().join('|');
+  S.borrowed = next;
+  if (changed) emit('running');
+}
+async function keepBorrowed(id) {
+  if (!S.borrowed[id]) return false;
+  try { setBorrowed((await api('/api/models/borrowed', {method: 'POST', body: {model: id, state: 'keep'}})).borrowed); return true; }
+  catch { return false; }   // only a convenience: at worst it's unloaded and loads again when next used
+}
+function borrowedNote(id) {
+  const b = S.borrowed[id];
+  if (!b) return null;
+  const when = b.after ? `${fmtSecs(b.after)} after it was last used` : 'as soon as nothing is using it';
+  return h('div', {class: 'model-borrowed'}, icon('clock'),
+    h('span', {class: 'spacer'}, `Loaded just for 🎤 or 🔊 in a chat, so it’s unloaded again ${when}.`),
+    btn('Keep loaded', async () => { if (await keepBorrowed(id)) toast(`${shortName(id)} stays loaded`, 'ok', {timeout: 2500}); }, {small: true, kind: 'ghost'}));
+}
+
+async function loadModel(id, {quiet = false, skipFit = false, protect = new Set(), borrow = false} = {}) {
+  if (!borrow) keepBorrowed(id);
   if (S.running.has(id)) { markUsed(id); return true; }
   const existing = S.loading.get(id);
   if (existing) return existing.promise;
@@ -1489,7 +1521,9 @@ function buildNav() {
     if (v.hidden || (v.computerOnly && S.health?.remote)) continue;
     if (group !== null && v.group !== group) nav.append(h('div', {class: 'nav-sep'}));
     group = v.group;
-    nav.append(h('a', {href: `#/${v.id}`, dataset: {view: v.id}, title: v.title}, icon(v.ic), h('span', {}, v.title)));
+    const dot = v.id === 'system' && S.health?.update?.newer && !S.health?.remote;   // a new version of the panel is out
+    nav.append(h('a', {href: `#/${v.id}`, dataset: {view: v.id}, title: dot ? `${v.title}: a new version of the panel is available` : v.title,
+      class: v.id === S.view ? 'active' : ''}, icon(v.ic), h('span', {}, v.title), dot ? h('span', {class: 'nav-dot', 'aria-label': 'Update available'}) : null));
   }
 }
 
@@ -1836,10 +1870,13 @@ function modelCard(m, {compact = false, store = false, onChange} = {}) {
       m.total_size ? h('span', {}, 'Size ', h('b', {}, fmtBytes(m.total_size, {si: true}))) : null,
       num(m.npu_usage) ? h('span', {}, 'NPU ', h('b', {}, `${m.npu_usage}%`)) : null,
       m.load_time ? h('span', {}, 'Loads in ', h('b', {}, fmtSecs(m.load_time))) : null,
-      store && m.likes ? h('span', {}, icon('heart'), ' ', h('b', {}, String(m.likes))) : null),
+      store && num(m.downloads) !== null ? h('span', {class: 'model-downloads', title: `${Number(m.downloads).toLocaleString('en')} downloads`},
+        icon('download'), ' ', h('b', {}, fmtCount(m.downloads))) : null,
+      store && m.likes ? h('span', {title: `${m.likes} likes`}, icon('heart'), ' ', h('b', {}, String(m.likes))) : null),
     loading ? h('div', {class: 'stack-sm'}, h('div', {class: 'model-progress'}, loading.pct !== null ? `Loading… ${Math.round(loading.pct)}%` : `Loading into NPU memory${loading.expected ? ` (about ${fmtSecs(loading.expected)})` : '…'}`),
       progressBar(loading.pct ?? 0, {indeterminate: loading.pct === null})) : null,
     dl ? h('div', {class: 'stack-sm'}, h('div', {class: 'model-progress'}, `Downloading… ${Math.round(num(dl.progress) || 0)}%`), progressBar(num(dl.progress) || 0)) : null,
+    !store && running ? borrowedNote(id) : null,
     actions]);
   const refresh = () => { if (onChange) onChange(); };
   if (store) {
@@ -1869,12 +1906,17 @@ function modelCard(m, {compact = false, store = false, onChange} = {}) {
 
 function viewModels(root, ctx) {
   let tab = sessionStorage.getItem('tiiny.modelsTab') || 'library';
-  let query = '';
+  const startQuery = sessionStorage.getItem('tiiny.modelsQuery') || '';  // set by links like Studio's "Get it"
+  sessionStorage.removeItem('tiiny.modelsQuery');
+  let query = startQuery.toLowerCase();
   let type = 'all';
-  let sort = 'recommended';
+  const SORTS = [['recommended', 'Recommended'], ['downloads', 'Most downloaded'], ['trending', 'Trending'], ['likes', 'Most liked'], ['name', 'Name']];
+  let sort = sessionStorage.getItem('tiiny.storeSort');
+  if (!SORTS.some(([k]) => k === sort)) sort = 'recommended';
   const seg = segmented([['library', 'On this device'], ['store', 'Model store']], tab, t => { tab = t; type = 'all'; sessionStorage.setItem('tiiny.modelsTab', t); if (t === 'store' && !S.store) refreshStore(); render(); });
-  const sortSel = h('select', {class: 'input sm', style: {width: 'auto'}, 'aria-label': 'Sort store models', onchange: e => { sort = e.target.value; render(); }},
-    [['recommended', 'Recommended'], ['trending', 'Trending'], ['likes', 'Most liked'], ['name', 'Name']].map(([v, l]) => h('option', {value: v}, l)));
+  const sortSel = h('select', {class: 'input sm', style: {width: 'auto'}, 'aria-label': 'Sort store models',
+    onchange: e => { sort = e.target.value; sessionStorage.setItem('tiiny.storeSort', sort); render(); }},
+    SORTS.map(([v, l]) => h('option', {value: v, selected: v === sort}, l)));
   const chips = h('div', {class: 'row wrap gap-sm chip-row'});
   const dlBox = h('div');
   const body = h('div', {}, loadingBlock('Loading models…'));
@@ -1884,7 +1926,7 @@ function viewModels(root, ctx) {
   ctx.on('running', renderPlanner);
   ctx.on('models', renderPlanner);
   root.append(
-    h('div', {class: 'toolbar'}, seg, searchBox('Search models…', v => { query = v.toLowerCase(); render(); }), sortSel, h('span', {class: 'spacer'}),
+    h('div', {class: 'toolbar'}, seg, searchBox('Search models…', v => { query = v.toLowerCase(); render(); }, startQuery), sortSel, h('span', {class: 'spacer'}),
       btn('Import from Hugging Face', importModel, {icon: 'download', kind: 'ghost'}),
       iconBtn('refresh', 'Refresh', async () => { await Promise.all([refreshModels(), refreshRunning(), tab === 'store' ? refreshStore() : null, Downloads.poll()]); }, {small: false})),
     memRow, dlBox, chips, body);
@@ -1910,7 +1952,8 @@ function viewModels(root, ctx) {
     let rows = all.filter(m => (type === 'all' || (m.type || 'Other') === type) &&
       (!query || [m.name, m.display_name, m.fullname, m.id, m.type, m.desc, (m.tags || []).join(' ')].join(' ').toLowerCase().includes(query)));
     if (tab === 'store') {
-      const by = {recommended: m => num(m.recommend_rank) ?? 1e9, trending: m => -(num(m.trending_score) ?? 0), likes: m => -(num(m.likes) ?? 0), name: m => 0};
+      const by = {recommended: m => num(m.recommend_rank) ?? 1e9, downloads: m => -(num(m.downloads) ?? 0), trending: m => -(num(m.trending_score) ?? 0),
+        likes: m => -(num(m.likes) ?? 0), name: m => 0};
       rows = rows.slice().sort((a, b) => sort === 'name' ? String(a.name).localeCompare(String(b.name)) : by[sort](a) - by[sort](b));
     } else {
       rows = rows.slice().sort((a, b) => (S.running.has(b.id) - S.running.has(a.id)) || String(a.type).localeCompare(String(b.type)) || String(a.name).localeCompare(String(b.name)));
@@ -2345,11 +2388,12 @@ function modelPicker(kind, onChange) {
   render();
   return {el: wrap, get value() { return sel.value; }, render, renderStatus};
 }
-async function ensureLoaded(id) {
+async function ensureLoaded(id, {borrow = false} = {}) {
   if (!id) { toast('Pick a model first', 'err'); return false; }
+  if (!borrow) keepBorrowed(id);
   if (S.running.has(id)) return true;
   toast(`Loading ${shortName(id)} first…`, 'info', {timeout: 3000});
-  return loadModel(id, {quiet: true});
+  return loadModel(id, {quiet: true, borrow});
 }
 
 function viewPlayground(root, ctx) {
@@ -2392,6 +2436,9 @@ function imageDims(src) {
   return new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve([i.naturalWidth, i.naturalHeight]); i.onerror = () => reject(new Error('Unsupported image')); i.src = src; });
 }
 const EDIT_FAMILIES = /flux|hidream|sensenova|qwen_image|qwen-image/i;
+/* Image add-ons made for one job only. They're never picked for general edits ("make it night time"). */
+const SINGLE_PURPOSE_IMAGE = {'background-remove': 'removing the background', 'object-remove': 'removing objects', outpaint: 'extending a picture past its edges'};
+const singlePurpose = id => Object.entries(SINGLE_PURPOSE_IMAGE).find(([k]) => String(id || '').toLowerCase().includes(k))?.[1] || null;
 
 function toolImage(el, {picker, ctx}) {
   const PRESETS = ['512x512', '768x432', '432x768', '768x480', '480x768', '640x480', '480x640', '1024x1024', '1280x960', '960x1280', '1536x864', '864x1536', '1536x960', '960x1536'];
@@ -2439,6 +2486,7 @@ function toolImage(el, {picker, ctx}) {
     if (!refs.length) refsEl.append(h('div', {class: 'muted small'}, 'Add up to ' + maxRefs + ' images (or paste or drop them here). The first one sets the composition.'));
     clear(refNote);
     if (family && !EDIT_FAMILIES.test(family)) refNote.append(h('span', {class: 'warn-text'}, `${shortName(mp.value)} can’t edit images; choose Qwen-Image, FLUX, HiDream or SenseNova.`));
+    else if (singlePurpose(mp.value)) refNote.append(h('span', {class: 'warn-text'}, `${shortName(mp.value)} is made for one job: ${singlePurpose(mp.value)}. For other changes, choose another image model.`));
     else if (refs.length > 1 && /flux/i.test(family)) refNote.append(h('span', {class: 'warn-text'}, 'FLUX uses only one reference image.'));
   }
   async function addRef(src, gid) {
@@ -3661,6 +3709,246 @@ function firmwareCard(ctx) {
   return card({title: 'Firmware', ic: 'shield'}, body);
 }
 
+/* The panel itself (tiinyui/selfupdate.py): its version, and updating it from GitHub. It only asks GitHub when you press
+   Check for updates, or once a day if you switch that on. */
+function panelUpdateCard(ctx) {
+  const body = h('div', {class: 'stack'}, loadingBlock('Checking the panel’s version…'));
+  let st = null, following = '', restarting = false;
+
+  async function load() {
+    st = await api('/api/update');
+    if (S.health) S.health.update = {latest: st.latest, newer: st.newer, checked_at: st.checked_at};
+    buildNav();
+    render();
+    if (st.job?.status === 'running' && following !== st.job.id) follow(st.job.id);
+  }
+  function follow(id) {
+    following = id;
+    followJob(id, j => { if (st && ctx.alive()) { st.job = j; render(); } }).then(j => {
+      following = '';
+      if (!j) return;
+      if (j.status === 'done') {
+        toast(`Version ${j.result?.version || ''} is ready`, 'ok', {detail: 'Restart the panel to start using it.'});
+        notify('The panel’s update is ready', 'Restart the panel to start using it.');
+      } else if (j.status === 'failed') toast('The update didn’t work', 'err', {detail: j.error});
+      if (ctx.alive()) load().catch(() => {});
+    });
+  }
+
+  function render() {
+    if (!ctx.alive()) return;
+    clear(body);
+    if (restarting) {
+      body.append(h('div', {class: 'stack-sm', 'aria-live': 'polite'}, h('strong', {}, 'The panel is restarting'), progressBar(0, {indeterminate: true}),
+        h('p', {class: 'small muted'}, 'This page reloads by itself in a few seconds.')));
+      return;
+    }
+    if (!st) { body.append(loadingBlock('Checking the panel’s version…')); return; }
+    const rel = st.release || {};
+    const job = st.job;
+    const ready = job?.status === 'done' && job.result?.version && job.result.version !== st.current;   // installed, not restarted yet
+    body.append(kvList([['Installed', st.current], ['Latest', st.latest ? `${st.latest}${rel.published ? ` · ${fmtAgo(rel.published)}` : ''}` : null],
+      ['Last checked', st.checked_at ? fmtAgo(st.checked_at) : 'not yet'], ['Kept from before', st.previous ? `${st.previous} (in the panel’s .previous folder)` : null]]));
+    if (job?.status === 'running') {
+      body.append(h('div', {class: 'stack-sm', 'aria-live': 'polite'}, h('strong', {}, job.message || 'Updating…'),
+        progressBar(job.progress == null ? 0 : job.progress * 100, {indeterminate: job.progress == null}),
+        h('p', {class: 'small muted'}, 'Your chats, projects and settings aren’t touched. You can leave this page.')));
+      return;
+    }
+    if (ready) {
+      body.append(h('div', {class: 'banner ok'}, icon('check'), h('div', {class: 'text'}, h('strong', {}, `Version ${job.result.version} is ready`),
+        h('span', {class: 'small'}, 'Restart the panel to start using it. This page reloads by itself.')),
+        btn('Restart now', restart, {small: true, kind: 'primary', icon: 'rotate'})));
+    } else if (job?.status === 'failed') {
+      body.append(h('div', {class: 'banner err'}, icon('alert'), h('div', {class: 'text'}, h('strong', {}, 'The last update didn’t work'),
+        h('span', {class: 'small'}, job.error || ''))));
+    }
+    if (st.error) {
+      body.append(h('div', {class: 'banner warn'}, icon('alert'), h('div', {class: 'text'}, h('strong', {}, 'Couldn’t check for updates'), h('span', {class: 'small'}, st.error))));
+    }
+    if (st.newer && !ready) {
+      const how = st.how === 'git' ? 'It updates with git (git pull), like you would yourself.' : st.how === 'zip' ? 'It downloads the new version from GitHub and keeps the old one in case you need it.' : '';
+      body.append(h('div', {class: 'stack-sm'},
+        h('strong', {}, `Version ${st.latest} is available`),
+        rel.notes ? h('details', {class: 'raw', open: true}, h('summary', {}, 'What’s new'), h('div', {class: 'md', html: renderMarkdown(rel.notes)})) : null,
+        st.how === 'manual' ? h('div', {class: 'banner warn'}, icon('info'), h('div', {class: 'text'}, h('strong', {}, 'Update it yourself'), h('span', {class: 'small'}, st.how_note)))
+          : h('p', {class: 'small muted'}, `${how} Your chats, projects and settings aren’t touched.`),
+        h('div', {class: 'row wrap'}, st.how !== 'manual' ? btn(`Update to ${st.latest}`, install, {kind: 'primary', icon: 'download'}) : null,
+          rel.url ? h('a', {class: 'btn ghost', href: rel.url, target: '_blank', rel: 'noopener noreferrer'}, icon('link'), h('span', {}, 'On GitHub')) : null)));
+    } else if (st.checked_at && !st.error && !ready) {
+      body.append(h('div', {class: 'row wrap', style: {alignItems: 'center'}}, st.no_releases ? badge('No releases published yet', '', 'info') : badge('Up to date', 'ok', 'check')));
+    }
+    const daily = !!S.health?.settings?.update_check_daily;
+    body.append(h('div', {class: 'row wrap', style: {alignItems: 'center'}}, btn('Check for updates', check, {small: true, kind: 'ghost', icon: 'refresh'})),
+      h('label', {class: 'row gap-sm small', style: {alignItems: 'center'}}, switchInput(daily, setDaily, 'Check once a day'),
+        h('span', {}, 'Check once a day ', h('span', {class: 'muted'}, '(it only asks GitHub which version is the latest)'))));
+  }
+
+  async function check() {
+    st = await api('/api/update/check', {method: 'POST', body: {}});
+    if (S.health) S.health.update = {latest: st.latest, newer: st.newer, checked_at: st.checked_at};
+    buildNav();
+    render();
+    if (!st.error && !st.newer) toast(st.no_releases ? 'No version of the panel is published yet' : 'The panel is up to date', 'ok', {timeout: 2500});
+  }
+  async function setDaily(v) {
+    try { S.health = await api('/api/settings', {method: 'POST', body: {update_check_daily: v}}); toast(v ? 'The panel checks for updates once a day' : 'Daily update checks are off', 'ok', {timeout: 2500}); }
+    catch (e) { toast('Couldn’t save that', 'err', {detail: e.message}); }
+    render();
+  }
+  async function install() {
+    const ok = await confirmDialog({title: `Update the panel to ${st.latest}?`, confirmLabel: `Update to ${st.latest}`, message: h('div', {class: 'stack-sm'},
+      h('p', {}, st.how === 'git' ? 'The panel gets the new version with git pull.' : 'The panel downloads the new version from GitHub and puts it in place. The old version is kept in the panel’s .previous folder.'),
+      h('p', {}, 'Your chats, projects, Gallery and settings stay as they are. Afterwards you restart the panel.'))});
+    if (!ok) return;
+    const j = await api('/api/update/install', {method: 'POST', body: {}});
+    st.job = j;
+    render();
+    follow(j.id);
+  }
+  async function restart() {
+    const busy = (await api('/api/update').catch(() => ({}))).busy || [];
+    const ok = await confirmDialog({title: 'Restart the panel now?', confirmLabel: 'Restart', danger: busy.length > 0, message: h('div', {class: 'stack-sm'},
+      busy.length ? h('p', {}, 'This is still running and stops:') : null, busy.length ? h('ul', {}, busy.map(t => h('li', {}, t))) : null,
+      h('p', {}, 'Open terminals close, and an answer that’s being written stops. This page reloads by itself in a few seconds.'))});
+    if (!ok) return;
+    const old = st.current;
+    await api('/api/update/restart', {method: 'POST', body: {force: true}});
+    restarting = true;
+    render();
+    let down = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 180000) {
+      await sleep(1000);
+      try {
+        const info = await (await fetch('/__tiiny__', {cache: 'no-store'})).json();
+        if (info.app === 'tiiny-ui' && (down || info.version !== old)) break;
+      } catch { down = true; }   // between the old server stopping and the new one starting
+    }
+    location.reload();
+  }
+
+  ctx.every(30000, () => { if (!following && !restarting) load().catch(() => {}); });
+  load().catch(e => { if (ctx.alive()) clear(body).append(errorBlock(e.message, {title: 'Couldn’t read the panel’s version', retry: () => load().catch(() => {})})); });
+  return card({title: 'Tiiny Control Panel', ic: 'download', sub: 'This panel’s version and its updates'}, body);
+}
+
+/* A backup of the panel's own data (tiinyui/backup.py): chats, projects, meetings, the Gallery and code reviews, as one
+   ZIP. Never with API keys or sign-ins. */
+function panelDataCard(ctx) {
+  const body = h('div', {class: 'stack'}, loadingBlock());
+  const out = h('div', {class: 'stack-sm'});
+  const input = h('input', {type: 'file', accept: '.zip,application/zip', hidden: true});
+  const withHistory = h('input', {type: 'checkbox'});
+  const KINDS = [['chats', 'Chats'], ['projects', 'Projects'], ['meetings', 'Meetings'], ['gallery', 'Gallery'], ['reviews', 'Code reviews'], ['studio', 'Studio']];
+  let sum = null, busy = false;
+
+  async function load() {
+    sum = await api('/api/backup');
+    render();
+    if (sum.job && !busy) follow(sum.job);
+  }
+  function render() {
+    if (!ctx.alive() || !sum) return;
+    const c = sum.collections || {};
+    const rows = KINDS.filter(([k]) => c[k]?.records).map(([k, label]) => [label, `${c[k].records} · ${fmtBytes(c[k].bytes)}`]);
+    clear(body).append(
+      h('p', {class: 'muted small'}, 'Everything the panel keeps on this computer, as one ZIP file. The device backup doesn’t include it.'),
+      rows.length ? kvList(rows.concat([['In total', fmtBytes(sum.bytes)]])) : h('p', {class: 'muted'}, 'Nothing saved yet.'),
+      h('label', {class: 'check'}, withHistory, h('span', {}, h('span', {}, 'Include the performance history'),
+        h('small', {class: 'muted'}, `The dashboard’s charts of the last 7 days (${fmtBytes(sum.metrics_bytes || 0)}).`))),
+      h('div', {class: 'row wrap'}, btn('Download a backup', exportIt, {kind: 'primary', icon: 'download'}),
+        btn('Restore from a backup…', () => input.click(), {icon: 'upload'})),
+      h('p', {class: 'muted small'}, 'Never in a backup: API keys, and the sign-ins of this browser and your paired phones.'),
+      out, input);
+  }
+
+  async function exportIt() {
+    follow(await api('/api/backup/export', {method: 'POST', body: {metrics: withHistory.checked}}));
+  }
+  async function follow(j) {
+    busy = true;
+    const restoring = j.meta?.action === 'restore';
+    const msg = h('span', {class: 'small muted'}, j.message || (restoring ? 'Restoring…' : 'Packing your data…'));
+    const bar = progressBar(0, {indeterminate: true});
+    clear(out).append(h('div', {class: 'stack-sm', 'aria-live': 'polite'}, msg, bar));
+    const fin = await followJob(j.id, x => {
+      msg.textContent = x.message || msg.textContent;
+      if (x.progress != null) { bar.classList.remove('indeterminate'); bar.firstChild.style.width = `${Math.round(x.progress * 100)}%`; }
+    });
+    busy = false;
+    if (!ctx.alive()) return;
+    clear(out);
+    if (!fin) return;
+    if (fin.status !== 'done') {
+      if (fin.status === 'failed') out.append(errorBlock(fin.error || 'It stopped.', {title: restoring ? 'The restore didn’t work' : 'The backup didn’t work'}));
+      return;
+    }
+    if (!restoring && fin.result?.file) {
+      const f = fin.result.file;
+      out.append(h('div', {class: 'net'}, icon('archive'), h('span', {class: 'spacer ellipsis', title: f.name}, `${f.name} · ${fmtBytes(f.size)}`),
+        h('a', {class: 'btn sm primary', href: fileHref(f, true), download: f.name}, icon('download'), 'Download')),
+        h('p', {class: 'muted small'}, 'Keep it somewhere safe: it holds your chats and files. The link works for a few hours.'));
+      return;
+    }
+    const r = fin.result || {};
+    const parts = [r.added ? `${r.added} added` : '', r.replaced ? `${r.replaced} replaced by a newer copy` : '', r.kept ? `${r.kept} already here` : ''].filter(Boolean);
+    out.append(h('div', {class: 'banner ok'}, icon('check'), h('div', {class: 'text'}, h('strong', {}, 'Restored'),
+      h('span', {class: 'small'}, [`${parts.join(', ') || 'Nothing new'}.`, r.settings ? 'Settings restored.' : '',
+        r.aside ? `What it replaced was set aside in ${r.aside}.` : ''].filter(Boolean).join(' '))),
+      btn('Reload the page', () => location.reload(), {small: true, icon: 'refresh'})));
+    if (typeof ChatUI !== 'undefined') { ChatUI.cache?.clear?.(); ChatUI.summaries = null; }
+    load().catch(() => {});
+  }
+
+  input.addEventListener('change', async () => {
+    const f = input.files[0];
+    input.value = '';
+    if (!f) return;
+    const msg = h('span', {class: 'small muted'}, `Uploading ${f.name}…`);
+    const bar = progressBar(0);
+    clear(out).append(h('div', {class: 'stack-sm'}, msg, bar));
+    let up, info;
+    try {
+      up = await uploadFile(f, p => { bar.firstChild.style.width = `${Math.round(p * 100)}%`; });
+      msg.textContent = 'Reading the backup…';
+      info = await api('/api/backup/inspect', {method: 'POST', body: {file: up.id}});
+    } catch (e) { clear(out).append(errorBlock(e.message, {title: 'Couldn’t use that file'})); return; }
+    clear(out);
+    const choice = await restoreDialog(f.name, info);
+    if (choice) follow(await api('/api/backup/restore', {method: 'POST', body: {file: up.id, ...choice}}));
+  });
+
+  function restoreDialog(name, info) {
+    return new Promise(resolve => {
+      let done = false;
+      const cols = info.collections || {};
+      const lines = KINDS.filter(([k]) => cols[k]?.records).map(([k, label]) => h('li', {}, `${label}: ${cols[k].records}`,
+        cols[k].here ? h('span', {class: 'muted'}, ` (${cols[k].here} already here)`) : null));
+      const merge = h('input', {type: 'radio', name: 'restore-mode', checked: true});
+      const replace = h('input', {type: 'radio', name: 'restore-mode'});
+      const settings = h('input', {type: 'checkbox'});   // off: restoring into the same computer shouldn't change its settings
+      const go = h('button', {class: 'btn primary', type: 'button', onclick: () => { done = true; m.close(); resolve({mode: replace.checked ? 'replace' : 'merge', settings: settings.checked && !!info.settings}); }}, 'Restore');
+      for (const r of [merge, replace]) r.addEventListener('change', () => { go.className = `btn ${replace.checked ? 'danger solid' : 'primary'}`; });
+      const m = modal({title: `Restore from ${name}?`, onClose: () => { if (!done) resolve(null); }, body: h('div', {class: 'stack'},
+        h('p', {}, `Made ${fmtDate(info.created)}${info.version ? ` with version ${info.version} of the panel` : ''}.`),
+        lines.length ? h('ul', {}, lines) : h('p', {class: 'muted'}, 'It has no chats, projects or other items.'),
+        info.metrics ? h('p', {class: 'muted small'}, `Also ${info.metrics} day${info.metrics === 1 ? '' : 's'} of performance history (days that aren’t here yet are added).`) : null,
+        info.skipped ? h('p', {class: 'muted small'}, `${info.skipped} item${info.skipped === 1 ? ' is' : 's are'} left out: they come from a newer version of the panel.`) : null,
+        h('label', {class: 'check'}, merge, h('span', {}, h('span', {}, 'Add what’s missing'),
+          h('small', {class: 'muted'}, 'Keeps everything here. When both have the same item, the newer one wins.'))),
+        h('label', {class: 'check'}, replace, h('span', {}, h('span', {}, 'Replace everything'),
+          h('small', {class: 'muted'}, 'Your current chats, projects, meetings, Gallery and code reviews are set aside first (in the data folder), then the backup takes their place.'))),
+        info.settings ? h('label', {class: 'check'}, settings, h('span', {}, h('span', {}, 'Also restore the panel’s settings'),
+          h('small', {class: 'muted'}, 'Model pins, idle unloading, agent tools and the like. API keys are never in a backup.'))) : null),
+        actions: [h('button', {class: 'btn ghost', type: 'button', onclick: () => m.close()}, 'Cancel'), go]});
+    });
+  }
+
+  load().catch(e => { if (ctx.alive()) clear(body).append(errorBlock(e.message, {title: 'Couldn’t read the panel’s data', retry: () => load().catch(() => {})})); });
+  return card({title: 'Your panel’s data', ic: 'archive', sub: 'Chats, projects, meetings, the Gallery and code reviews'}, body);
+}
+
 /* ------------------------------------------------------------------- System */
 function viewSystem(root, ctx) {
   const settingsBody = h('div');
@@ -3689,9 +3977,10 @@ function viewSystem(root, ctx) {
       card({title: 'Power', ic: 'power'}, h('div', {class: 'stack'}, h('p', {class: 'muted small'}, 'Restarting or shutting down stops running tasks and unloads all models.'),
         h('div', {class: 'row wrap'}, btn('Restart', restartDevice, {icon: 'rotate'}), btn('Shut down', shutdownDevice, {icon: 'power', kind: 'danger'})))),
       firmwareCard(ctx)),
+    h('div', {class: 'grid cols-2'}, S.health?.remote ? null : panelUpdateCard(ctx), cliCard),
     h('div', {class: 'grid cols-2'},
-      card({title: 'Backup and restore', ic: 'archive'}, h('div', {class: 'stack'},
-        h('p', {class: 'muted small'}, 'Save the device’s data (settings, vault, profile…) as a ZIP file on this computer, or restore one.'),
+      card({title: 'Device backup', ic: 'archive', sub: 'What’s on your Tiiny'}, h('div', {class: 'stack'},
+        h('p', {class: 'muted small'}, 'Save the device’s data (settings, Vault, profile…) as a ZIP file on this computer, or restore one.'),
         h('div', {class: 'row wrap'}, btn('Create backup', async () => {
           clear(backupOut).append(loadingBlock('Creating backup… this can take a while.'));
           const r = await cli(['backup', {outdir: true, prefix: '--output='}], {yes: true, timeout: 3600, label: 'Back up device', silent: true});
@@ -3700,7 +3989,7 @@ function viewSystem(root, ctx) {
           if (!r.outputs?.length) { backupOut.append(h('p', {class: 'muted'}, 'The backup finished but no file was produced.'), rawDetails(r.stdout, 'CLI output')); return; }
           append(backupOut, r.outputs.map(f => h('div', {class: 'net'}, icon('archive'), h('span', {class: 'spacer'}, `${f.name} · ${fmtBytes(f.size)}`), h('a', {class: 'btn sm primary', href: fileHref(f, true), download: f.name}, icon('download'), 'Download'))));
         }, {icon: 'archive', kind: 'primary'}), btn('Restore from file…', () => restoreInput.click(), {icon: 'upload'})), backupOut, restoreInput)),
-      cliCard),
+      S.health?.remote ? null : panelDataCard(ctx)),
     h('div', {class: 'grid cols-2'}, typeof appCard === 'function' ? appCard(ctx) : null, typeof devicesCard === 'function' ? devicesCard(ctx) : null),
     card({title: 'Agents', ic: 'spark', sub: 'Apps from the Agent Store installed on the device'}, agentsBody),
     card({title: 'Panel settings', ic: 'settings', sub: 'Normally empty: the panel reads the device address and API key from the tiiny CLI'}, settingsBody),
@@ -4011,7 +4300,6 @@ async function init() {
   setupNavDrawer();
   bus.addEventListener('running', updatePill);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeMenu(); if (Activity.open && !$('#modal-root').children.length) toggleActivity(false); } });
-  window.addEventListener('hashchange', route);
   window.addEventListener('beforeunload', e => { if ([...Terms.values()].some(t => t.running) || (typeof ChatUI !== 'undefined' && ChatUI.streaming) || VaultUploader.busy) { e.preventDefault(); e.returnValue = ''; } });
 
   if (TOKEN.includes('{{')) {
@@ -4023,7 +4311,8 @@ async function init() {
     if (st !== 'ok') { showSignedOut(st); return; }
   }
   await refreshHealth();
-  if (S.health?.remote) buildNav();   // phones: leave out the pages that only work on the computer
+  buildNav();   // phones: leave out the pages that only work on the computer; System: a dot when an update is out
+  window.addEventListener('hashchange', route);   // only now: a page drawn before the session token arrives gets refused
   route();
   refreshOverview().then(() => { if (S.state === 'online' && !S.modelsAt) refreshModels(); });
   setInterval(() => { if (!document.hidden && S.view !== 'dashboard') refreshOverview(); }, 20000);

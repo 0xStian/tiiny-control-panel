@@ -202,7 +202,7 @@ const TOOL_GROUPS = [['web', 'Web'], ['files', 'Your files and history'], ['devi
   ['computer', 'This computer'], ['helpers', 'Small helpers']];
 
 /* ---- images: the model that can edit, and which image “it” means ---- */
-const imageEditModel = () => modelsOf('image').filter(m => EDIT_FAMILIES.test(m.id)).sort((x, y) => S.running.has(y.id) - S.running.has(x.id))[0];
+const imageEditModel = () => modelsOf('image').filter(m => EDIT_FAMILIES.test(m.id) && !singlePurpose(m.id)).sort((x, y) => S.running.has(y.id) - S.running.has(x.id))[0];
 /* The image to edit: a Gallery id, else the picture attached to the user's latest message, else the last image
    made or shown in this chat. Resolves to {src (to load now), thumb (to keep in the chat: no token, small), galleryId, label}. */
 const galleryThumbPath = item => { const f = gFile(item, 'thumb') || gFile(item); return f ? `/api/gallery/${item.id}/files/${encodeURIComponent(f.name)}` : ''; };

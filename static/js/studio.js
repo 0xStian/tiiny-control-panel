@@ -94,12 +94,13 @@ function studioJob(kind, ctx, {onDone, stages} = {}) {
 }
 
 /* Image input used by 3D and video: a file, a gallery item, a paste or a drop. */
-function imageInput({label = 'Image', hint, initialGalleryId} = {}) {
-  let value = null;  // {gallery_id} | {file} plus preview src
+function imageInput({label = 'Image', hint, initialGalleryId, onChange} = {}) {
+  let value = null;  // {gallery_id} | {file}, plus src (preview) and full (the full-size picture)
   const preview = h('div', {class: 'img-in-preview'});
   const fileInput = h('input', {type: 'file', accept: 'image/png,image/jpeg,image/webp', hidden: true});
   const set = v => {
     value = v;
+    if (onChange) setTimeout(() => onChange(v), 0);
     clear(preview);
     if (!v) { preview.append(h('div', {class: 'img-in-empty muted small'}, icon('image'), 'No image yet. Choose one, paste one or drop it here.')); return; }
     preview.append(h('img', {src: v.src, alt: 'chosen image'}), iconBtn('x', 'Remove', () => set(null)));
@@ -108,10 +109,10 @@ function imageInput({label = 'Image', hint, initialGalleryId} = {}) {
   fileInput.addEventListener('change', () => { setFile(fileInput.files[0]); fileInput.value = ''; });
   const el = h('div', {class: 'field'}, h('label', {}, label), preview,
     h('div', {class: 'row wrap gap-sm'}, btn('Choose a file', () => fileInput.click(), {small: true, icon: 'upload'}),
-      btn('From the gallery', async () => { const it = await galleryPicker(); if (it) set({gallery_id: it.id, src: gUrl(it, 'thumb') || gUrl(it), name: it.title}); }, {small: true, icon: 'grid', kind: 'ghost'})),
+      btn('From the gallery', async () => { const it = await galleryPicker(); if (it) set({gallery_id: it.id, src: gUrl(it, 'thumb') || gUrl(it), full: gUrl(it), name: it.title}); }, {small: true, icon: 'grid', kind: 'ghost'})),
     hint ? h('small', {class: 'hint'}, hint) : null, fileInput);
   set(null);
-  if (initialGalleryId) GalleryAPI.get(initialGalleryId).then(it => set({gallery_id: it.id, src: gUrl(it, 'thumb') || gUrl(it), name: it.title})).catch(() => {});
+  if (initialGalleryId) GalleryAPI.get(initialGalleryId).then(it => set({gallery_id: it.id, src: gUrl(it, 'thumb') || gUrl(it), full: gUrl(it), name: it.title})).catch(() => {});
   return {
     el, setFile,
     get value() { return value; },
@@ -281,10 +282,26 @@ function studioMusic(el, ctx, picker) {
 }
 
 /* ------------------------------------------------------------------- 3D */
+/* The background: the device's own step for it needs a model TiinyOS doesn't ship (BiRefNet), so an image model on the
+   Tiiny made for this, FLUX.2-klein Background-Remove, cuts the object out; cutout.js then turns the plain backdrop it
+   returns transparent, which TRELLIS.2 leaves out of the model. */
+const BG_PROMPT = 'Remove the background from the image';
+const bgModel = () => modelsOf('image').find(m => /background-remove/i.test(m.id));
+function bgSize(w, hgt) {  // the picture's shape, longest side 768, both sides multiples of 16 (what the model takes)
+  const s = 768 / Math.max(w, hgt);
+  const r = v => Math.max(256, Math.round(v * s / 16) * 16);
+  return [r(w), r(hgt)];
+}
+
 function studio3d(el, ctx, picker) {
   if (!modelsOf('model3d').length) { el.append(card({}, noModelState('model3d', 'image-to-3D'))); return; }
   const mp = picker('model3d');
-  const img = imageInput({label: 'Picture of an object', hint: 'Works best with one object, seen from the front, on a plain background.', initialGalleryId: ctx.query.get('from')});
+  let bgMode = 'cut';
+  let cut = null;   // {state: 'working' | 'done' | 'error', ...} for the picture shown
+  let cutRun = 0;   // the newest cut-out; an older one that finishes later is ignored
+  const cutBox = h('div', {class: 'stack-sm'});
+  const img = imageInput({label: 'Picture of an object', hint: 'Works best with one object, seen from the front.', initialGalleryId: ctx.query.get('from'),
+    onChange: () => { cutRun++; cut = null; if (bgMode === 'cut' && bgModel() && img.value) makeCut(); else renderCut(); }});
   S.dropHandler = files => img.setFile(files.find(f => f.type.startsWith('image/')));
   const onPaste = e => { const f = [...(e.clipboardData?.files || [])].find(x => x.type.startsWith('image/')); if (f) { e.preventDefault(); img.setFile(f); } };
   document.addEventListener('paste', onPaste);
@@ -293,7 +310,58 @@ function studio3d(el, ctx, picker) {
   const qSeg = segmented([['fast', 'Fast'], ['balance', 'Balanced'], ['quality', 'Best']], quality, v => { quality = v; });
   const tex = h('input', {type: 'checkbox', checked: true});
   const simp = h('input', {type: 'checkbox', checked: true});
-  const bg = h('input', {type: 'checkbox', checked: true});
+  const bgSeg = segmented([['cut', 'Cut it out (AI)'], ['keep', 'Keep it']], bgMode, v => {
+    bgMode = v;
+    if (v === 'cut' && bgModel() && img.value && (!cut || cut.state === 'error')) makeCut(); else renderCut();
+  });
+  async function makeCut() {
+    const m = bgModel(), v = img.value;
+    if (!m || !v) return renderCut();
+    const run = ++cutRun;
+    cut = {state: 'working'};
+    renderCut();
+    const wasLoaded = S.running.has(m.id);
+    try {
+      if (!(await ensureLoaded(m.id))) throw new Error(`${shortName(m.id)} isn’t loaded.`);
+      const full = v.full || v.src;
+      const [w, hgt] = bgSize(...await imageDims(full));
+      const out = await dev('/v1/image/generate', {method: 'POST', json: {model: m.id, prompt: BG_PROMPT, width: w, height: hgt, steps: 4, image: await fitImage(full, w, hgt)},
+        save: 'cutout.png', label: 'Cut out the background', timeout: 300, silent: true});
+      if (!out.ok || !out.file) throw new Error(out.error || 'No picture came back.');
+      const res = await cutoutBlob(fileHref(out.file));
+      if (run === cutRun) cut = {state: 'done', model: m.id, ...res};
+    } catch (e) {
+      if (run === cutRun) cut = {state: 'error', error: e.message || String(e)};
+    } finally {
+      // loaded just for this: unload it again (it loads in seconds), so the 3D model has the NPU memory
+      if (!wasLoaded && S.running.has(m.id)) dev(`/api/v1/models/${encPath(m.id)}/stop`, {method: 'POST', quiet: true, silent: true, timeout: 120}).then(refreshRunning);
+    }
+    if (run === cutRun) renderCut();
+  }
+  function renderCut() {
+    clear(cutBox);
+    const m = bgModel();
+    if (bgMode === 'keep') { cutBox.append(h('small', {class: 'hint'}, 'The picture goes to the 3D model as it is, background and all.')); return; }
+    if (!m) {
+      cutBox.append(h('div', {class: 'banner info'}, icon('info'), h('div', {class: 'text'},
+        h('strong', {}, 'Cutting out the background needs FLUX.2-klein Background-Remove'),
+        h('span', {class: 'small'}, 'An image model that runs on your Tiiny (7.2 GB from the model store). Until it’s there, the picture is used as it is.')),
+        btn('Get it', () => { sessionStorage.setItem('tiiny.modelsTab', 'store'); sessionStorage.setItem('tiiny.modelsQuery', 'Background-Remove'); go('models'); }, {small: true, icon: 'download'})));
+      return;
+    }
+    if (!img.value) { cutBox.append(h('small', {class: 'hint'}, `When you choose a picture, ${shortName(m.id)} cuts out the object on your Tiiny.`)); return; }
+    if (!cut || cut.state === 'working') { cutBox.append(h('div', {class: 'loading'}, h('span', {class: 'spinner'}), `Cutting out the background with ${shortName(m.id)}…`)); return; }
+    if (cut.state === 'error') {
+      cutBox.append(h('div', {class: 'banner err'}, icon('alert'), h('div', {class: 'text'}, h('strong', {}, 'The cut-out didn’t work'), h('span', {class: 'small'}, cut.error)),
+        btn('Try again', makeCut, {small: true, icon: 'refresh'})));
+      return;
+    }
+    cutBox.append(h('div', {class: 'cut-pair'},  // your picture is right above; this is what goes to the 3D model
+      h('figure', {}, h('img', {class: 'checker', src: cut.url, alt: 'The cut-out'}), h('figcaption', {}, 'Goes to the 3D model'))),
+      h('div', {class: 'row wrap gap-sm', style: {alignItems: 'center'}}, btn('Try again', makeCut, {small: true, icon: 'refresh', kind: 'ghost'}),
+        h('small', {class: 'muted'}, cut.plain === false ? 'The background didn’t come out even, so check the edges.' : `Cut out by ${shortName(cut.model)}.`)));
+  }
+  renderCut();
   const seed = h('input', {class: 'input', type: 'number', placeholder: 'random', style: {maxWidth: '160px'}});
   const resultEl = h('div');
   const job = studioJob('model3d', ctx, {stages: STAGES_3D, onDone: j => { if (j.status === 'done' && j.result?.gallery_id) { showResult(j.result.gallery_id, j.result.notes); recent.load(); } }});
@@ -312,14 +380,18 @@ function studio3d(el, ctx, picker) {
       h('div', {class: 'field'}, h('label', {}, 'Quality'), qSeg, h('small', {class: 'hint'}, 'Fast takes roughly 8–10 minutes; better quality takes longer.')),
       h('label', {class: 'check'}, tex, h('span', {}, h('span', {}, 'Paint a texture'), h('small', {class: 'muted'}, 'Off gives a plain grey shape, much faster.'))),
       h('label', {class: 'check'}, simp, h('span', {}, h('span', {}, 'Simplify the mesh'), h('small', {class: 'muted'}, 'Smaller files that open everywhere.'))),
-      h('label', {class: 'check'}, bg, h('span', {}, h('span', {}, 'Remove the background first'), h('small', {class: 'muted'}, 'Skipped automatically if the device can’t do it.'))),
+      h('div', {class: 'field'}, h('label', {}, 'Background'), bgSeg, cutBox),
       h('div', {class: 'field'}, h('label', {}, 'Seed'), seed),
       h('div', {}, btn('Make the 3D model', async () => {
         if (job.busy) { toast('A 3D model is already being made', 'info'); return; }
         if (!img.value) { toast('Choose a picture first', 'info'); return; }
+        const useCut = bgMode === 'cut' && bgModel();
+        if (useCut && (!cut || cut.state === 'working')) { toast('Wait for the cut-out to finish', 'info'); return; }
+        if (useCut && cut.state !== 'done') { toast('The cut-out didn’t work. Try again, or keep the background.', 'info'); return; }
         if (!(await ensureLoaded(mp.value))) return;
         const spec = await img.spec('image');
-        const options = {quality, texture: tex.checked, simplify: simp.checked, remove_background: bg.checked};
+        if (useCut) Object.assign(spec, {cutout_file_id: (await uploadFile(cut.blob, null, 'cutout.png')).id, cutout_model: cut.model});
+        const options = {quality, texture: tex.checked, simplify: simp.checked, remove_background: bgMode === 'cut'};
         if (seed.value !== '') options.seed = Number(seed.value);
         try { clear(resultEl); job.attach(await StudioAPI.start('3d', {model: mp.value, options, ...spec})); }
         catch (e) { toast('Couldn’t start', 'err', {detail: e.message}); }

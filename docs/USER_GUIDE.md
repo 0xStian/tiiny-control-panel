@@ -211,9 +211,12 @@ Further down the dashboard you'll find **History** (charts of the last 15 minute
 ![Models](images/models.png)
 
 1. **On this device / Model store.** Your downloaded models, or the store to download new ones (the device needs internet access over Wi-Fi or Ethernet).
+   Store models show how many times they've been downloaded (⤓) and liked (♥); sort by **Most downloaded** to see the
+   popular ones. The panel remembers the order you pick.
 2. **Import from Hugging Face.** Bring in a compatible model that isn't in the store.
 3. **NPU memory.** How full the NPU's memory is and which model takes how much. Two big models often don't fit together.
 4. **Unload idle models.** Switch this on and the panel unloads models nobody used for a while. Click the ☆ next to a model to keep it loaded anyway.
+   Models that 🎤 or 🔊 loaded just for themselves are unloaded again even with this off (see [Chat](#chat)).
 5. **Filters** by type: chat models, speech recognition (ASR), image, music, 3D, [decision models](#decision-models)
    (*Text Classification*) and more.
 6. **A loaded model**: **Chat** opens a chat with it, **Unload** frees its memory. The **⋮** menu has *Details*, *Interrupt current task*, *Benchmark speed*, *Copy model ID* and *Delete from device*.
@@ -238,9 +241,30 @@ used first) and shows how full the NPU will be afterwards.
 8. **Message box.** **Enter** sends, **Shift+Enter** starts a new line. The 📎 button attaches images (for vision models), text files and documents. You can also paste or drop them.
 9. **Use my Vault** looks up passages in your Vault for every message, and a [decision model](#decision-models) leaves out
    the ones that don't fit the question. **Use my profile** tells the model about you (from *Account → Personalization profile*).
+10. **🎤 Say your message.**
+    - **Recording:** press it and talk. Press it again (or Enter) when you're done; it stops by itself after 2 minutes, and
+      **Esc** throws the recording away.
+    - **Writing it down:** a speech recognition model on your Tiiny (for example Whisper) writes down what you said in
+      the message box, so you can check it before you send.
+    - **A secure page:** the microphone only works on one. On this computer it always is; on a phone you need
+      [HTTPS](#use-it-from-your-phone).
+11. **🔊 Read aloud.** A voice model on your Tiiny (for example Qwen3-TTS) speaks the answer, leaving out code, Markdown and
+    citations. It starts after a few seconds and makes the next part while it speaks. **Stop** ends it.
 
-The **⋮** menu (top right of the chat) can rename the chat, move it to a project, copy it as Markdown, clear it or delete it.
-Under each answer: **Copy**, **Regenerate**, and how many tokens it took and how fast.
+**When you're done with 🎤 or 🔊**, a model it had to load is unloaded again, 2 minutes after its last use, even if
+you close the page:
+- **Models that stay loaded:** one that was already loaded before, and one you start using somewhere else in the
+  meantime (Meetings, the Playground).
+- **Keeping it yourself:** **Keep loaded** on the model's card (Dashboard, Models).
+- **Changing it:** **⋮ → Voice…** sets the wait (straight away, 2 or 10 minutes) or keeps the models loaded.
+
+The **⋮** menu (top right of the chat) can:
+- rename the chat, move it to a project, or copy it as Markdown;
+- set up the **Voice**: which models write down what you say and read answers aloud, the language you speak, how the
+  voice sounds, and when the models they had to load are unloaded again;
+- clear the chat or delete it.
+
+Under each answer: **Copy**, **Read aloud**, **Regenerate**, and how many tokens it took and how fast.
 
 ### Agent mode
 
@@ -265,6 +289,8 @@ right one. Each result links to it.
 **Editing images.** "Make it night time" changes the last image in the chat, a picture you attached, or one the agent
 found in your Gallery. The approval card shows which picture. The result keeps the picture's shape, goes into the
 Gallery next to the original, and needs an image model that can edit (Qwen-Image, FLUX, HiDream or SenseNova).
+Add-ons made for one job, like FLUX.2-klein Background-Remove, aren't used for this; Studio → 3D uses that one for its
+cut-outs.
 
 **Searching the web.** The agent searches first and then reads the most useful results, so it works with real
 addresses instead of guessing them. Each search step lists the links it found; click one to open it. Searches go to
@@ -454,8 +480,20 @@ Longer creative work. It runs on the panel's server, so you can close the tab an
 6. **Result** and your recent songs.
 
 **3D** turns a picture into a textured 3D model (a GLB file) in five steps on the device. It takes about 8 minutes at
-*Fast*, and you can pause or cancel. You can turn the result around in the page. **Video** appears when a video model
-is on your device.
+*Fast*, and you can pause or cancel. You can turn the result around in the page.
+
+**The background.** With **Background: Cut it out (AI)**, the object is cut out of your picture before the 3D steps, so
+the background doesn't end up in the model:
+- **The model that does it:** FLUX.2-klein Background-Remove, an image model that runs on your Tiiny (7.2 GB from the
+  model store; **Get it** on the 3D page opens the store at it). It works on busy backgrounds too, like a table or a room.
+- **The preview:** when you choose a picture, the cut-out appears next to it after about half a minute, on a
+  checkerboard so you can see what's left out. **Try again** makes a new one.
+- **Memory:** if the model wasn't loaded, the panel loads it just for the cut-out and unloads it afterwards (it loads in
+  seconds), so the 3D model has the NPU to itself.
+- **Keep it** sends your picture as it is, background and all. So does **Cut it out** when the model isn't on your
+  Tiiny yet; the 3D page says so.
+
+**Video** appears when a video model is on your device.
 
 ### Gallery
 
@@ -547,10 +585,7 @@ directly. They must be on your own network: cloud services can't reach your Tiin
 ![System](images/system.png)
 
 1. **Power.** Restart or shut down the device. When shutting down, keep the power connected until the light goes off.
-2. **Backup and restore.** Save the device's data (settings, Vault, profile…) as a ZIP file on this computer, or restore one.
-3. **App and notifications.** Install the panel as an app, get a notification when long tasks finish, add it to your desktop's app menu, or stop the panel.
-4. **Phone and other devices.** See the next section.
-5. **Firmware.** Your TiinyOS version, and what's new when there's an update.
+2. **Firmware.** Your TiinyOS version, and what's new when there's an update.
    - **Install** asks first. Your Tiiny then downloads and checks the update (step 1), and installs it (step 2).
      The card shows each step's progress, through the restart at the end. You can leave the page. Keep the panel
      running until the download has finished; the panel starts the installation when it's done.
@@ -559,6 +594,27 @@ directly. They must be on your own network: cloud services can't reach your Tiin
      it for you; otherwise (for example after restarting the panel) the card offers **Restart now**.
    - If your Tiiny asks you to log in after restarting, log in under **Account**; the update then finishes.
    - On devices without the new upgrade service, the button runs `tiiny upgrade` in a terminal instead.
+3. **Tiiny Control Panel.** This panel's version and its updates.
+   - **Check for updates** asks GitHub which version is the latest; nothing else is sent. Switch on **Check once a day**
+     to have it ask by itself; the **System** entry in the menu then shows a dot when a new version is out.
+   - **Update** shows what's new and asks first. A copy you cloned with git updates with `git pull`. Otherwise the panel
+     downloads the new version from GitHub, checks it, and swaps its files, keeping the old version in the `.previous`
+     folder inside the panel's folder. Your chats, projects, Gallery and settings aren't touched.
+   - **Restart now** starts the new version, and the page reloads by itself. If a code review or another background job
+     is running, it tells you first.
+   - If the panel's own files were changed on this computer, it doesn't overwrite them. Then update with git yourself.
+4. **Device backup.** Save the device's data (settings, Vault, profile…) as a ZIP file on this computer, or restore one.
+5. **Your panel's data.** What the panel keeps on this computer: chats, projects, meetings, the Gallery and code reviews.
+   - **Download a backup** puts all of it in one ZIP file. Tick *Include the performance history* for the dashboard's
+     charts too. API keys and the sign-ins of your browser and phones are never in it.
+   - **Restore from a backup…** shows what's in the file, then gives you two choices:
+     - **Add what's missing:** when both have the same item, the newer one wins.
+     - **Replace everything.**
+
+     Whatever a restore replaces is set aside first, in a `.before-restore-…` folder in `~/.local/share/tiiny-ui/`.
+     Tick *Also restore the panel's settings* when you move to a new computer.
+6. **App and notifications.** Install the panel as an app, get a notification when long tasks finish, add it to your desktop's app menu, or stop the panel.
+7. **Phone and other devices.** See [the next section](#use-it-from-your-phone).
 
 Also here:
 
@@ -629,9 +685,14 @@ The panel can also listen on your computer's local-network address, but only for
 2. Scan the QR code with the phone's camera (same Wi-Fi as the computer). The pairing link works once, for 5 minutes.
 3. That's it. The phone stays paired. **Remove** it from the same card at any time.
 
-**What a phone can't do.** For safety, phones get everything except what reaches into your computer itself: no
-terminals, no panel settings, no browsing your computer's folders, no code reviews or project links of folders on
-the computer (a phone can review a ZIP file it uploads), and no revealing the API key. Do those on the computer.
+**What a phone can't do.** For safety, phones get everything except what reaches into your computer itself:
+- no terminals and no panel settings;
+- no browsing your computer's folders, and no code reviews or project links of folders on the computer (a phone can
+  review a ZIP file it uploads);
+- no revealing the API key;
+- no updating the panel, and no backing up or restoring its data.
+
+Do those on the computer.
 
 > [!WARNING]
 > Without `--tls-cert`, phones connect over plain HTTP. Use it only on a network you trust, like your home Wi-Fi.
@@ -687,13 +748,18 @@ the computer (a phone can review a ZIP file it uploads), and no revealing the AP
 
 | Where | What |
 |---|---|
-| `~/.local/share/tiiny-ui/` | Your chats, projects (with their search indexes), code reviews, meetings, the Gallery's files, and 7 days of performance history. |
+| `~/.local/share/tiiny-ui/` | Your chats, projects (with their search indexes), code reviews, meetings, the Gallery's files, and 7 days of performance history. After a restore, also `.before-restore-…` folders with what the restore replaced. |
+| `.previous/` in the panel's folder | The version from before the last update (only after updating from System → Tiiny Control Panel without git). |
 | `~/.config/tiiny-ui/settings.json` | Panel settings, including measured model sizes. Readable only by you. |
 | `~/.config/tiiny-ui/devices.json` | Paired phones. Only fingerprints of their logins are stored, so the file can't be used to log in. |
 | `~/.config/tiiny-ui/browser-key` | The secret the panel signs your browser in with. Readable only by you. Delete it and restart the panel to sign every browser out. |
 | `~/.local/tiiny/config.json` | The command-line tool's device address and API key. The panel only reads it. |
 
-- **Everything stays local.** Data only goes to your Tiiny, to a web page when you ask the panel to read one, and to the search engine when the agent searches the web (only the search words, and it asks first).
+- **Everything stays local.** Data only goes:
+  - to your Tiiny;
+  - to a web page when you ask the panel to read one;
+  - to the search engine when the agent searches the web (only the search words, and it asks first);
+  - to GitHub when you check for a new version of the panel (only that question).
 - **Only your browser.** The panel listens on `127.0.0.1` and only works in a browser it has [signed in](#5-start-the-panel), so other programs and user accounts on this computer can't use it.
 - **Protected from other websites.** Websites open in your browser can't read the panel or send it commands.
 - **It only runs what you started it to run.** The `tiiny` tool it uses, and whether the agent may run commands
@@ -730,6 +796,24 @@ minutes. Try again later, or choose Brave Search or your own SearXNG under **Sys
 **The agent says "Commands are switched off".** Start the panel with `python3 tiiny_ui.py --allow-commands` (see
 [Agent mode](#agent-mode)).
 
+**🎤 says the microphone needs a secure connection.** Browsers only allow the microphone on secure pages. On this
+computer, use the panel at `http://127.0.0.1:8765`. On a phone, start the panel with `--tls-cert` and `--tls-key` (see
+[phones](#use-it-from-your-phone)).
+
+**🎤 or 🔊 says there's no model for it.** Speaking needs a speech recognition model (for example Whisper), and reading
+aloud needs a text-to-speech model (for example Qwen3-TTS VoiceDesign). **Find one** opens the model store at them.
+Models made for copying a voice aren't used for reading aloud: they need a recording every time.
+
+**An update says some of the panel's files were changed.** A file in the panel's folder was edited on this computer,
+so the panel won't overwrite it. In the panel's folder, run `git stash` and then `git pull`, or download the new
+version from GitHub.
+
+**Something is wrong after an update.** The previous version is kept in the `.previous` folder inside the panel's
+folder. To go back:
+1. Stop the panel.
+2. Move the files from `.previous` back into the panel's folder.
+3. Start the panel again.
+
 **"This browser isn't signed in".** Start the panel from your app menu, or run `python3 tiiny_ui.py` again: either
 one opens it signed in, and the waiting page updates by itself. This happens in a new browser or profile, after
 clearing your browsing data, or when you use a different address than the one the panel opens (`localhost` and
@@ -753,7 +837,10 @@ or use a smaller size. In agent chats, the panel swaps the models for you.
 
 **Image edits stop after a couple of minutes.** The device gives an edit about 2½ minutes. Use about 20 steps or a smaller size.
 
-**3D: background removal is skipped.** That step currently fails on the device itself, so your picture is used as it is. A plain background works best.
+**3D: the background ends up in the model.** TiinyOS has a background step of its own for 3D, but up to 0.1.39 the
+model it needs (BiRefNet) isn't on the device, so that step fails (*"BriefNet ONNX model not found"*) and your picture
+is used as it is. Get **FLUX.2-klein Background-Remove** from the model store, and Studio → 3D cuts the object out with
+it instead (see [Studio](#studio)).
 
 **A code review says "Your Tiiny stopped answering".** The review paused because the device went away. Once it's back
 (and unlocked), open the review and press **Resume**.
@@ -781,8 +868,11 @@ You can also start the panel with `--verbose`.
 - **Projects and pinned files** get their own search index, built with the device's embedding models.
 - **Built-in libraries.** Everything works without internet access on your computer. Three small libraries are included in `static/vendor/`: [xterm.js](https://xtermjs.org/) (MIT), Google's [model-viewer](https://modelviewer.dev/) (Apache-2.0) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT).
 
-**Moving or updating the panel:** keep `tiiny_ui.py`, `tiinyui/` and `static/` together and copy them anywhere. Your
-data stays in `~/.local/share/tiiny-ui/`, so it's still there after you move or update the panel.
+**Moving or updating the panel:**
+- **Moving:** keep `tiiny_ui.py`, `tiinyui/` and `static/` together and copy them anywhere.
+- **Updating:** use **System → Tiiny Control Panel**, or `git pull` if you cloned it.
+- **Your data:** it stays in `~/.local/share/tiiny-ui/`, so it's still there after you move or update the panel.
+- **A new computer:** download a backup under **System → Your panel's data** and restore it on the new computer.
 
 **Removing it:**
 1. Delete the panel's folder.

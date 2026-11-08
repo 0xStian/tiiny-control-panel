@@ -172,3 +172,73 @@ class Usage:
 
 
 USAGE = Usage()
+
+
+class Borrowed:
+    """Models the panel loaded just for a moment, to unload them again afterwards (🎤 and 🔊 in chats).
+
+    A page borrows a model before it loads one that isn't loaded, uses it, then gives it back, saying how long to wait.
+    Once nothing has used the model for that long, the panel unloads it (Metrics.borrowed_check). A model that was
+    already loaded is never borrowed. A model stops being borrowed, and so stays loaded, when something else loads it
+    for its own use (keep), when it's pinned, or when it's unloaded some other way."""
+
+    HOLD_LIMIT = 600   # a page that's still "using" a model with no sign of life for this long was closed in the middle
+    MAX = 50
+
+    def __init__(self):
+        import threading
+        self.lock = threading.Lock()
+        self.marks = {}   # model id -> {"since", "why", "users": {session: last sign of life}, "done", "after"}
+
+    def borrow(self, model, session, *, loaded, why="voice", after=120) -> bool:
+        """A page starts using `model`; `loaded`: it was loaded already. True when it's borrowed (to give back later)."""
+        now = time.time()
+        with self.lock:
+            mk = self.marks.get(model)
+            if mk is None:
+                if loaded or len(self.marks) >= self.MAX:
+                    return False
+                mk = self.marks[model] = {"since": now, "why": why, "users": {}, "done": None, "after": after}
+            if session in mk["users"] or len(mk["users"]) < self.MAX:
+                mk["users"][session] = now
+            mk["after"] = after
+            return True
+
+    def give_back(self, model, session, after) -> bool:
+        """The page is done with it: unload it once nothing has used it for `after` seconds."""
+        with self.lock:
+            mk = self.marks.get(model)
+            if mk is None:
+                return False
+            mk["users"].pop(session, None)
+            mk["done"] = time.time()
+            mk["after"] = after
+            return True
+
+    def keep(self, model) -> bool:
+        """It stays loaded: something relies on it now."""
+        with self.lock:
+            return self.marks.pop(model, None) is not None
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {k: dict(v, users=dict(v["users"])) for k, v in self.marks.items()}
+
+    def unchanged(self, model, users) -> bool:
+        """Still borrowed, and no page started using it since `users` was read (checked just before unloading)."""
+        with self.lock:
+            mk = self.marks.get(model)
+            return bool(mk) and mk["users"] == users
+
+    def unloaded(self, model, users):
+        """The panel unloaded it. Forget it, unless a page started using it while it was being unloaded: that page
+        loads it again, and it's still borrowed, to give back when that page is done."""
+        with self.lock:
+            mk = self.marks.get(model)
+            if mk is not None and mk["users"] == users:
+                del self.marks[model]
+            elif mk is not None:
+                mk["since"] = time.time()
+
+
+BORROWED = Borrowed()

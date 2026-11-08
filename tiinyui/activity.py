@@ -31,7 +31,7 @@ KINDS = (
     ("chat", r"chat|complet|text|vision|multimodal|llm|vlm", r"/v1/(chat/)?completions|/v1/responses|/v1/messages"),
 )
 STUDIO_JOBS = {"music", "model3d", "video"}  # the device works on these after the request has returned
-NOT_DEVICE_JOBS = {"command"}                 # jobs that run on this computer, not on the Tiiny
+NOT_DEVICE_JOBS = {"command", "update", "backup"}  # jobs that run on this computer, not on the Tiiny
 APPS_EVERY = 300                              # seconds between fetches of the device's app list
 ROUTE = re.compile(r"[\w\-/?=&.%]{1,200}")
 
@@ -103,6 +103,12 @@ def track(path, model=None, *, title=None, href=None, phone=None):
     finally:
         with _lock:
             _mine.pop(entry["id"], None)
+
+
+def busy_models() -> set:
+    """The models the panel's own requests are using right now."""
+    with _lock:
+        return {e["model"] for e in _mine.values() if e["model"]}
 
 
 def app_names(fetch, wanted) -> dict:

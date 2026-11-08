@@ -3,6 +3,48 @@
 All notable changes to this project are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-11-08
+
+### Added
+
+- **Panel updates.** **System → Tiiny Control Panel** shows which version you have and checks GitHub for a new one when
+  you ask, or once a day if you switch that on. It shows what's new, then updates itself:
+  - **A git copy:** it runs `git pull`, the same as you would.
+  - **Any other copy:** it downloads the release, checks it and swaps the files, keeping the old version in `.previous/`.
+
+  Then **Restart now**, and the page reloads by itself. Your chats, projects and settings aren't touched.
+- **Backups of the panel's own data.** **System → Your panel's data** downloads your chats, projects, meetings, Gallery
+  and code reviews as one ZIP file, optionally with the performance history. Restoring one either adds what's missing
+  or replaces everything; the current data is set aside first. API keys and sign-ins are never in a backup.
+- **Voice in chat.**
+  - **🎤 in the message box:** say your message, and a speech recognition model on your Tiiny writes it down in the box
+    for you to check and send.
+  - **🔊 Read aloud under each answer:** a voice model on your Tiiny speaks the answer, leaving out code and Markdown.
+  - **Models are unloaded again afterwards.** When 🎤 or 🔊 had to load its model, the panel unloads it 2 minutes
+    after its last use, even if you close the page. A model that was already loaded stays loaded.
+  - **Chat ⋮ → Voice…** picks the models and the voice, and how long to wait before unloading (or not to).
+- **Releases on GitHub.** Each version is published as a GitHub release from the changelog. That's what the update
+  check looks at.
+- **Background cut-out for 3D.** Studio → 3D cuts the object out of your picture with FLUX.2-klein Background-Remove
+  on your Tiiny, shows the cut-out before the 3D run, and sends it with a transparent background, so the background
+  stays out of the model. The device's own background step needs a model that TiinyOS 0.1.39 doesn't have
+  (BiRefNet). Without the add-on, the 3D page links to it in the model store.
+- **Download counts in the model store.** Every store model shows how often it's been downloaded, and the store can be
+  sorted by **Most downloaded**.
+
+### Changed
+
+- **System → Device backup** is the new name of the device's backup card. It sits next to **Your panel's data**.
+
+### Fixed
+
+- Image add-ons made for one job (Background-Remove, Object-Remove, Outpaint) are no longer picked for general image
+  edits by the agent, and the Playground says what they're for.
+- Following a link to a page of the panel while it was still signing the browser in no longer sends a burst of
+  refused requests.
+
 ## [1.0.0] - 2026-11-06
 
 The first public release.
@@ -88,4 +130,6 @@ The first public release.
 - **A safer subset for phones.** No panel settings, terminals, folder browsing, local folders in reviews and projects,
   API key, or fetching local-network addresses.
 
+[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/0xStian/tiiny-control-panel/releases/tag/v1.0.0

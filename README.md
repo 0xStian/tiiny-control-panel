@@ -30,7 +30,7 @@ only talks to your Tiiny, and nothing goes to the cloud.
 
 | | |
 |---|---|
-| 💬 **Chat** | Streaming answers with a live thought process, image and document attachments, files pinned to a chat with clickable citations, answers from your Vault. |
+| 💬 **Chat** | Streaming answers with a live thought process, image and document attachments, files pinned to a chat with clickable citations, answers from your Vault. Say your message with 🎤, or have an answer read aloud with 🔊. |
 | 🤖 **Agent mode** | The model can search the web, your files and your past chats and meetings, read web pages, check the device, make and edit images and, if you allow it, work on your computer. You choose which tools it may use, and it asks before anything changes. |
 | 📁 **Projects** | Workspaces with their own instructions, model, files, web pages, a linked folder and a memory of facts and decisions. |
 | 🧠 **Models** | Load, unload, download and benchmark. It measures real NPU memory use, makes room when a model doesn't fit, and unloads idle models. |
@@ -43,7 +43,7 @@ only talks to your Tiiny, and nothing goes to the cloud.
 | 🔌 **Integrations** | Ready-to-copy setups for apps that speak the OpenAI, Anthropic or Ollama API: Open WebUI, Continue, Zed, LangChain and more. |
 | 📈 **Dashboard** | What the device is working on right now and for whom, live NPU, memory and CPU use, history charts, and how fast each model answers. |
 | 📱 **Phone and app** | A phone layout, QR-code pairing, install as an app, desktop notifications. |
-| ⚙️ **Device** | Wi-Fi, connectors, account, backups, firmware updates, power, and a real terminal for any `tiiny` command. |
+| ⚙️ **Device and panel** | Wi-Fi, connectors, account, firmware updates, power, and a real terminal for any `tiiny` command. Backups of the device and of the panel's own data, and updates for the panel itself. |
 
 ## Quick start
 
@@ -107,7 +107,7 @@ More, with every button explained: [the user guide](docs/USER_GUIDE.md).
 
 ## Privacy and security
 
-- **Nothing leaves your network** unless you ask. It talks to your Tiiny, to web pages you have it read, and to a search engine when the agent searches the web (only the search words). No analytics, no fonts or scripts from other sites.
+- **Nothing leaves your network** unless you ask. It talks to your Tiiny, to web pages you have it read, to a search engine when the agent searches the web (only the search words), and to GitHub when you check for a new version of the panel. No analytics, no fonts or scripts from other sites.
 - **Only your browser can use it.** It listens on `127.0.0.1` and only works in a browser it has signed in, so other programs, user accounts and websites can't control your device.
 - **Your API key stays put.** It comes from the `tiiny` tool's own config and isn't copied anywhere.
 - **Phones need pairing.** Phone access is off until you pair a phone with a QR code. Paired phones can't reach your computer's files, settings or terminals, and you can remove one any time.
@@ -144,6 +144,14 @@ already running. This happens in a new browser, after clearing browsing data, or
 
 The NPU's memory is probably full. The panel offers to unload other models to make room. **Models → NPU memory**
 shows how much each one takes. Big chat models and image models often don't fit together.
+</details>
+
+<details>
+<summary><b>How do I update the panel?</b></summary>
+
+Go to **System → Tiiny Control Panel** and press **Check for updates**. When there's a new version, press **Update**,
+then **Restart now**. Your chats, projects and settings stay as they are. If you cloned the panel with git, `git pull`
+in its folder works too. You can also let it check once a day; it only asks GitHub which version is the latest.
 </details>
 
 <details>

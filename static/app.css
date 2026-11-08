@@ -106,6 +106,7 @@ button { font: inherit; color: inherit; }
 .nav a.active { background: var(--accent-soft); color: var(--accent); }
 .nav .icon { width: 18px; height: 18px; }
 .nav-sep { height: 1px; background: var(--border); margin: 8px 6px; }
+.nav-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-left: auto; flex: none; box-shadow: 0 0 0 3px var(--accent-soft); }
 .sidebar-foot { padding-top: 10px; border-top: 1px solid var(--border); margin-top: 8px; }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -303,6 +304,10 @@ select.input { padding-right: 28px; cursor: pointer; max-width: 100%; }
 .model-stats b { color: var(--text); font-weight: 600; }
 .model-actions { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; align-items: center; }
 .model-progress { font-size: 12px; color: var(--muted); }
+/* Loaded just for 🎤 or 🔊 (app.js borrowedNote): it's unloaded again afterwards */
+.model-borrowed { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.model-borrowed > .icon { width: 14px; height: 14px; flex: none; }
+.model-borrowed > .spacer { min-width: 14em; }
 
 .empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 34px 20px; color: var(--muted); }
 .empty .icon { width: 30px; height: 30px; color: var(--faint); }
@@ -473,6 +478,19 @@ select.input { padding-right: 28px; cursor: pointer; max-width: 100%; }
 .composer-box { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--border-strong); border-radius: 14px; padding: 6px 6px 6px 12px; background: var(--panel); transition: border-color .12s, box-shadow .12s; }
 .composer-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
 .composer-box textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; color: var(--text); font: inherit; line-height: 1.5; max-height: 220px; padding: 6px 0; min-height: 24px; }
+/* 🎤 in the message box (voice.js): the button, then a level meter and the time while it records */
+.mic { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.mic .mic-meter, .mic .mic-clock, .mic .mic-status { display: none; }
+.mic.recording .mic-meter { display: inline-block; width: 34px; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.mic .mic-meter i { display: block; height: 100%; width: 0; background: var(--err); transition: width .08s linear; }
+.mic.recording .mic-clock { display: inline; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--err); min-width: 2.6em; }
+.mic.working .mic-status, .mic.starting .mic-status { display: inline; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.mic.recording .mic-btn { color: #fff; background: var(--err); border-color: var(--err); animation: mic-pulse 1.4s ease-in-out infinite; }
+.mic.working .mic-btn, .mic.starting .mic-btn { opacity: .6; }
+.mic-btn.unavailable { opacity: .55; }
+@keyframes mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--err) 45%, transparent); } 50% { box-shadow: 0 0 0 6px transparent; } }
+@media (prefers-reduced-motion: reduce) { .mic.recording .mic-btn { animation: none; } }
+.read-btn.reading { color: var(--accent); }
 .composer-opts { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
 .composer-opts label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .composer-opts input[type=checkbox] { accent-color: var(--accent); }
@@ -906,6 +924,9 @@ code.block { display: block; padding: 8px 10px; border-radius: 8px; background: 
   .composer { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
   .composer-box { padding: 4px 4px 4px 6px; }
   .composer-box textarea { font-size: 16px; }
+  .composer-box > .btn.icon-only, .mic .mic-btn { min-width: 40px; min-height: 40px; }
+  .mic.recording .mic-meter { display: none; }   /* phones: the time and the red button are enough */
+  .mic .mic-status { display: none !important; }
   .composer-opts { gap: 4px 14px; }
   .composer-opts .default-hint { display: none; }
   .chat-empty { padding: 24px 8px; }
@@ -945,6 +966,14 @@ code.block { display: block; padding: 8px 10px; border-radius: 8px; background: 
 @media (max-width: 560px) { .step-preview .pv-row { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
 
 /* On/off choices (System → Agent tools, Decision models): one row per group, a pill per choice (✓ on, + off). */
+/* Studio 3D: the picture next to its AI cut-out (the cut-out on a checkerboard, so its transparency shows) */
+.cut-pair { display: grid; grid-template-columns: minmax(0, 260px); gap: 12px; }
+.cut-pair figure { margin: 0; display: grid; gap: 4px; }
+.cut-pair img { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--panel-2); }
+.cut-pair img.checker { background-color: #fff; background-image: linear-gradient(45deg, #e3e5ea 25%, transparent 25%, transparent 75%, #e3e5ea 75%),
+  linear-gradient(45deg, #e3e5ea 25%, transparent 25%, transparent 75%, #e3e5ea 75%); background-size: 16px 16px; background-position: 0 0, 8px 8px; }
+.cut-pair figcaption { font-size: 12.5px; color: var(--muted); }
+
 /* Dashboard: Right now (what the Tiiny is doing) */
 .now-card.busy { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .now-idle { display: flex; align-items: center; gap: 12px; padding: 2px 0 4px; }

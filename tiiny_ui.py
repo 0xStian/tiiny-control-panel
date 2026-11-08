@@ -61,10 +61,10 @@ from pathlib import Path
 if os.name == "nt":  # the in-page terminal needs a Unix pseudo-terminal
     sys.exit("Tiiny Control Panel runs on Linux and macOS. Windows isn't supported yet.")
 
-from tiinyui import VERSION, activity, commands, decide, firmware, history, launcher, webfetch, websearch
+from tiinyui import VERSION, activity, backup, commands, decide, firmware, history, launcher, selfupdate, webfetch, websearch
 from tiinyui.browserauth import CODE_TTL, STORAGE_KEY, BrowserAuth
 from tiinyui.clitools import Runtime
-from tiinyui.common import USAGE, BadRequest, DeviceError, clamp_int, data_dir, error_message, guess_mime, mask, safe_name, valid_id
+from tiinyui.common import BORROWED, USAGE, BadRequest, DeviceError, clamp_int, data_dir, error_message, guess_mime, mask, safe_name, valid_id
 from tiinyui.device import (FORWARD_HEADERS, MAX_DEVICE_RESPONSE, SERVICES, DeviceConn, build_path, call as device_call,
                             device_json, device_open, discover_devices, multipart_body)
 from tiinyui.device import vault_upload as device_vault_upload
@@ -119,10 +119,11 @@ RISKY_MIME = ("text/html", "image/svg+xml", "application/xhtml+xml", "text/xml",
 # What paired phones may not do: change the panel, browse or read this computer's files, run the tiiny CLI
 # (it takes file paths), see the API key. They control the device and use the panel's features.
 LAN_FORBIDDEN = ("/api/lan", "/api/shutdown", "/api/launcher", "/api/settings", "/api/device/key", "/api/fs/",
-                 "/api/cli", "/api/pty", "/api/session", "/api/commands", "/api/files/")
+                 "/api/cli", "/api/pty", "/api/session", "/api/commands", "/api/files/", "/api/update", "/api/backup")
 # Settings that decide which program the panel runs; only changeable when starting it (--tiiny, --cli-config).
 STARTUP_ONLY_SETTINGS = ("tiiny_bin", "cli_config")
 START_ARGS = []  # the start-up options to repeat in the app-menu entry (--tiiny, --cli-config, --port, TLS)
+RESTART = {"wanted": False}  # /api/update/restart: once the server has stopped, start again (with the new version)
 ALLOW_COMMANDS = False  # --allow-commands: agent mode may run commands and read and write files (see tiinyui/commands.py)
 # Endpoints that exist only for one of agent mode's tools: they refuse when you switch that tool off under
 # System → Agent tools (agent_tools_off). The switches can only narrow what's allowed (commands still need --allow-commands).
@@ -218,10 +219,20 @@ class Handler(BaseHTTPRequestHandler):
         ("GET", r"/api/launcher", "api_launcher"),
         ("POST", r"/api/launcher", "api_launcher_set"),
         ("POST", r"/api/shutdown", "api_shutdown"),
+        # updating the panel, and backing up its own data (this computer only: both are in LAN_FORBIDDEN)
+        ("GET", r"/api/update", "api_update"),
+        ("POST", r"/api/update/check", "api_update_check"),
+        ("POST", r"/api/update/install", "api_update_install"),
+        ("POST", r"/api/update/restart", "api_update_restart"),
+        ("GET", r"/api/backup", "api_backup"),
+        ("POST", r"/api/backup/export", "api_backup_export"),
+        ("POST", r"/api/backup/inspect", "api_backup_inspect"),
+        ("POST", r"/api/backup/restore", "api_backup_restore"),
         # performance history and the idle watcher
         ("GET", r"/api/metrics", "api_metrics"),
         ("GET", r"/api/metrics/speed", "api_metrics_speed"),
         ("GET", r"/api/metrics/idle", "api_metrics_idle"),
+        ("POST", r"/api/models/borrowed", "api_models_borrowed"),
         # meetings
         ("GET", r"/api/meetings", "api_meetings"),
         ("POST", r"/api/meetings", "api_meeting_create"),
@@ -522,6 +533,7 @@ class Handler(BaseHTTPRequestHandler):
             "python": sys.version.split()[0],
             "remote": self.is_remote(),
             "commands": dict(commands.environment(), enabled=True) if ALLOW_COMMANDS and not self.is_remote() else {"enabled": False},
+            "update": selfupdate.summary(),
         })
 
     def api_settings(self, q):
@@ -611,6 +623,7 @@ class Handler(BaseHTTPRequestHandler):
         out = {name: f.result() for name, f in futures.items()}
         out["conn"] = DeviceConn.public(info)
         out["now"] = self.right_now(info, out)
+        out["borrowed"] = METRICS.borrowed_status()
         self.send_json(200, out)
 
     @staticmethod
@@ -1245,6 +1258,87 @@ class Handler(BaseHTTPRequestHandler):
         if HTTPD is not None:
             threading.Timer(0.3, HTTPD.shutdown).start()
 
+    # -- API: updating the panel (tiinyui/selfupdate.py) ----------------------------------------------
+    @staticmethod
+    def busy_jobs():
+        """The panel's background work a restart would stop."""
+        return [j.title for j in JOBS.list() if not j.finished and j.kind != "update"]
+
+    def api_update(self, q):
+        st = selfupdate.status()
+        job = JOBS.running("update") or next(iter(JOBS.list("update")), None)
+        st["job"] = job.info(with_log=True) if job else None
+        st["busy"] = self.busy_jobs()
+        self.send_json(200, st)
+
+    def api_update_check(self, q):
+        self.read_json()
+        selfupdate.check(force=True)
+        self.api_update(q)
+
+    def api_update_install(self, q):
+        self.read_json()
+        if JOBS.running("update"):
+            raise BadRequest("The panel is already updating.")
+
+        def work(job):
+            try:
+                return selfupdate.install(job)
+            except selfupdate.UpdateError as e:
+                raise BadRequest(str(e))
+        self.send_json(200, JOBS.start("update", "Updating the panel", work).info())
+
+    def api_update_restart(self, q):
+        body = self.read_json()
+        busy = self.busy_jobs()
+        if busy and not body.get("force"):
+            return self.send_json(200, {"restarting": False, "busy": busy})
+        if HTTPD is None:
+            raise BadRequest("The panel can't restart itself right now.")
+        self.send_json(200, {"restarting": True})
+        RESTART["wanted"] = True
+        threading.Timer(0.4, HTTPD.shutdown).start()
+
+    # -- API: a backup of the panel's own data (tiinyui/backup.py) ------------------------------------
+    def api_backup(self, q):
+        self.send_json(200, dict(backup.summary(STORE), job=(lambda j: j.info() if j else None)(JOBS.running("backup"))))
+
+    def api_backup_export(self, q):
+        body = self.read_json()
+        if JOBS.running("backup"):
+            raise BadRequest("A backup is already being made or restored. Wait for it to finish.")
+        metrics = bool(body.get("metrics"))
+
+        def work(job):
+            name = f"tiiny-panel-backup-{time.strftime('%Y-%m-%d')}.zip"
+            path = RT.new_output_path(name)
+            job.update(message="Packing your data…")
+            manifest = backup.export(STORE, SETTINGS, path, metrics=metrics, job=job)
+            return {"file": RT.register(path, name, "output"), "manifest": manifest}
+        self.send_json(200, JOBS.start("backup", "Backing up the panel's data", work, {"action": "export"}).info())
+
+    def _backup_upload(self, body) -> str:
+        rec = RT.get_file(str(body.get("file") or ""))
+        if not rec or not os.path.isfile(rec["path"]):
+            raise BadRequest("That uploaded file has expired. Please add it again.")
+        return rec["path"]
+
+    def api_backup_inspect(self, q):
+        self.send_json(200, backup.inspect(STORE, self._backup_upload(self.read_json())))
+
+    def api_backup_restore(self, q):
+        body = self.read_json()
+        path = self._backup_upload(body)
+        mode = str(body.get("mode") or "merge")
+        busy = [j.title for j in JOBS.list() if not j.finished]
+        if busy:
+            raise BadRequest(f"Wait until this has finished, then restore: {', '.join(busy[:3])}.")
+
+        def work(job):
+            job.update(message="Restoring…")
+            return backup.restore(STORE, SETTINGS, path, mode=mode, with_settings=bool(body.get("settings")), job=job)
+        self.send_json(200, JOBS.start("backup", "Restoring the panel's data", work, {"action": "restore"}).info())
+
     # -- API: performance history -------------------------------------------------------------
     def api_metrics(self, q):
         self.send_json(200, METRICS.query(q.get("range", ["1h"])[0]))
@@ -1255,7 +1349,27 @@ class Handler(BaseHTTPRequestHandler):
     def api_metrics_idle(self, q):
         self.send_json(200, {"enabled": bool(SETTINGS.get("idle_unload")), "minutes": SETTINGS.get("idle_minutes"),
                              "keep_loaded": SETTINGS.get("keep_loaded") or [], "models": METRICS.idle_status(),
-                             "events": [e for e in list(METRICS.events)[-50:] if e["kind"] == "auto-unload"]})
+                             "events": [e for e in list(METRICS.events)[-50:] if e["kind"] == "auto-unload"],
+                             "borrowed": METRICS.borrowed_status()})
+
+    def api_models_borrowed(self, q):
+        """🎤 and 🔊 borrow a model they have to load, and give it back when they're done; the panel then unloads it
+        once nothing has used it for `after` seconds (common.Borrowed). "keep": something else relies on it now."""
+        b = self.read_json()
+        model, state, session = b.get("model"), b.get("state"), b.get("session")
+        if not isinstance(model, str) or not model.strip() or len(model) > 300:
+            raise BadRequest("Which model?")
+        if state in ("using", "done") and not (isinstance(session, str) and re.fullmatch(r"[\w-]{1,64}", session)):
+            raise BadRequest("Missing or invalid session")
+        if state == "using":
+            ok = BORROWED.borrow(model, session, loaded=bool(b.get("loaded")), why="voice", after=clamp_int(b.get("after"), 0, 3600, 120))
+        elif state == "done":
+            ok = BORROWED.give_back(model, session, clamp_int(b.get("after"), 0, 3600, 120))
+        elif state == "keep":
+            ok = BORROWED.keep(model)
+        else:
+            raise BadRequest("state must be using, done or keep")
+        self.send_json(200, {"ok": ok, "borrowed": METRICS.borrowed_status()})
 
     # -- API: meetings ---------------------------------------------------------------------------
     def api_meetings(self, q):
@@ -1656,6 +1770,7 @@ def main():
     sys.stdout.flush()
 
     METRICS.start()
+    selfupdate.start_daily(SETTINGS)
     if SETTINGS.get("lan_enabled") and loopback:
         try:
             lan_start()
@@ -1679,6 +1794,11 @@ def main():
         PTYS.kill_all()
         httpd.server_close()
         shutil.rmtree(RT.work, ignore_errors=True)
+    if RESTART["wanted"]:  # after an update (System → Tiiny Control Panel): run the new version with the same options
+        again = sys.argv[1:] + ([] if "--no-browser" in sys.argv[1:] else ["--no-browser"])  # the open page reconnects
+        print("Restarting the panel…")
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, str(APP_DIR / "tiiny_ui.py"), *again])
 
 
 if __name__ == "__main__":

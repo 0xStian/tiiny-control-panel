@@ -27,6 +27,7 @@ DEFAULTS = {
     "agent_tools_off": [],        # agent tools switched off under System → Agent tools (tool names, or "history")
     "decision_model": "",         # the decision model features use ("" = a loaded one, else the smallest; see decide.py)
     "decisions_off": [],          # decision features switched off under System → Decision models (decide.FEATURES keys)
+    "update_check_daily": False,  # ask GitHub once a day whether a new panel version is out (selfupdate.py); off until you switch it on
 }
 
 

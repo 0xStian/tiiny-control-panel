@@ -36,11 +36,12 @@ Edit a file in `static/` and reload the page. Edit a Python file and restart the
 | `tiinyui/clitools.py`, `tiinyui/pty.py` | Running the `tiiny` command-line tool, including in a real terminal. |
 | `tiinyui/store.py`, `tiinyui/jobs.py` | Saved data (JSON files in `~/.local/share/tiiny-ui/`) and background jobs. |
 | `tiinyui/projects.py`, `rag.py`, `textextract.py`, `webfetch.py` | Projects, their search index, reading documents and web pages. |
-| `tiinyui/review.py`, `studio.py`, `meetings.py`, `metrics.py`, `pairing.py` | Code review, studio jobs, meeting notes, performance history, phone pairing. |
+| `tiinyui/review.py`, `studio.py`, `meetings.py`, `metrics.py`, `pairing.py` | Code review, studio jobs, meeting notes, performance history and unloading models (idle ones, and the ones 🎤 and 🔊 borrowed: `Borrowed` in `common.py`), phone pairing. |
 | `tiinyui/browserauth.py` | Signing this computer's browser in (one-time links, the stored credential). Read it before touching security checks. |
 | `tiinyui/decide.py` | Decision models (`/v1/systemone`): checks questions, picks and loads the model only when it fits, normalises answers. Every caller falls back when it's `Unavailable`. |
 | `tiinyui/firmware.py` | TiinyOS updates through the device's upgrade service (the v2 API its own dashboard uses). |
 | `tiinyui/activity.py` | What the device is doing right now (the dashboard's Right now card). It keeps a note of the panel's own model requests while they run (`track`; `device.call` and the chat and proxy routes do this) and pairs them with the device's task list, where every unnamed program shows as "API". |
+| `tiinyui/selfupdate.py`, `backup.py` | Updating the panel itself from GitHub releases (git pull or the release ZIP, then a restart), and the ZIP backup of the panel's own data. |
 | `tiinyui/websearch.py`, `commands.py`, `history.py` | Agent web search (DuckDuckGo, Brave Search, SearXNG); commands and files on this computer (`--allow-commands` only); searching saved chats, meetings and the Gallery. |
 | `static/index.html`, `static/app.css` | The page and all of its styles (desktop, then phones at the end). |
 | `static/app.js` | The core: helpers like `h()`, `dev()`, `api()`, the UI kit (`card`, `btn`, `modal`…), most pages. |
@@ -71,5 +72,21 @@ python3 tiiny_ui.py --no-browser &   # then open http://127.0.0.1:8765 and try y
 
 If you can, try your change with a real Tiiny, and say in the pull request what you tested and how.
 Keep pull requests focused on one thing, and describe the change from the user's point of view.
+
+## Making a release
+
+Releases are what the panel's **Check for updates** (System → Tiiny Control Panel) offers people.
+
+1. Set the new version in `tiinyui/__init__.py` (`VERSION = "1.2.0"`).
+2. In `CHANGELOG.md`, rename **Unreleased** to the version and date (`## [1.2.0] - 2026-12-01`), add a new empty
+   **Unreleased** above it, and update the links at the bottom.
+3. Commit, then tag and push: `git tag v1.2.0 && git push && git push --tags`.
+
+The **Release** workflow checks that the tag, `VERSION` and the changelog agree, and publishes the GitHub release
+with that version's changelog section as its notes.
+
+An update only replaces the panel's own files: `tiiny_ui.py`, `tiinyui/`, `static/`, `docs/`, `.github/` and the
+documents at the top level. If a release needs a new top-level folder, add it to `MANAGED_DIRS` in
+`tiinyui/selfupdate.py` one release before it's used.
 
 By contributing, you agree that your work is released under the [MIT License](LICENSE).

@@ -4,7 +4,9 @@ A sampler thread polls the device every few seconds while the panel runs. Sample
 for 24 hours and go to small daily JSONL files for 7 days, so the History charts can show a week.
 Loads and unloads are recorded as events. The chat proxy reports every completion's speed, which
 feeds the speed leaderboard. When "unload idle models" is on, models nobody has used for a while
-are unloaded, except pinned ones and anything the device reports as busy.
+are unloaded, except pinned ones and anything the device reports as busy. Models loaded just for a moment
+(🎤 and 🔊 in chats, see common.Borrowed) are unloaded again once they've been given back and nothing used them for
+the wait the page asked for, whether or not that switch is on.
 """
 
 from __future__ import annotations
@@ -17,8 +19,8 @@ import urllib.parse
 from collections import deque
 from pathlib import Path
 
-from . import device
-from .common import USAGE
+from . import activity, device
+from .common import BORROWED, USAGE
 
 SAMPLE_EVERY = 5
 KEEP_DAYS = 7
@@ -122,6 +124,10 @@ class Metrics:
                 self.sample()
             except Exception as e:  # noqa: BLE001 - the sampler must never die
                 self.last_error = str(e)
+            try:
+                self.borrowed_check()
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"borrowed models: {e}"
             if n % 12 == 0:
                 try:
                     self.idle_check()
@@ -276,6 +282,53 @@ class Metrics:
                 if 200 <= status < 300:
                     self.event("auto-unload", mid, f"idle for {int((time.time() - lu) // 60)} min")
                     done.append(mid)
+        return done
+
+    # -- models loaded just for a moment (common.Borrowed) ---------------------------------------------------------
+    def _alive(self, mid, mk) -> float:
+        """The last sign that a page is still using a borrowed model: it said so, or it sent the model work."""
+        return max(list(mk["users"].values()) + [self.last_used(mid) or 0])
+
+    def borrowed_status(self) -> dict:
+        """For the page: each borrowed model, what for, and in how many seconds it's unloaded (None while in use)."""
+        now, out = time.time(), {}
+        for mid, mk in BORROWED.snapshot().items():
+            using = bool(mk["users"]) and now - self._alive(mid, mk) < BORROWED.HOLD_LIMIT
+            last = max(mk["done"] or 0, self.last_used(mid) or 0)
+            out[mid] = {"for": mk["why"], "using": using, "after": mk["after"],
+                        "unload_in": None if using else max(0, round(last + mk["after"] - now))}
+        return out
+
+    def borrowed_check(self) -> list:
+        """Unload the borrowed models that were given back and haven't been used since for as long as was asked."""
+        marks = BORROWED.snapshot()
+        running = self.running
+        if not marks or running is None:   # nothing borrowed, or the device isn't answering
+            return []
+        now = time.time()
+        keep = set(self.settings.get("keep_loaded") or [])
+        busy = self.busy | activity.busy_models()
+        info, done = None, []
+        for mid, mk in marks.items():
+            if mid in keep:
+                BORROWED.keep(mid)   # pinned: it stays
+                continue
+            if mk["users"] and now - self._alive(mid, mk) < BORROWED.HOLD_LIMIT:
+                continue             # a page is using it
+            if mid not in running:
+                if now - mk["since"] > 60:
+                    BORROWED.keep(mid)   # not loaded (any more): nothing to unload
+                continue
+            if mid in busy or now - max(mk["done"] or 0, self.last_used(mid) or 0) < mk["after"]:
+                continue
+            if not BORROWED.unchanged(mid, mk["users"]):
+                continue             # a page started using it just now
+            info = info or self.devconn.resolve()
+            status, _, _ = device.call(info, "core", "POST", f"/api/v1/models/{urllib.parse.quote(mid, safe='/')}/stop", timeout=30)
+            if 200 <= status < 300:
+                BORROWED.unloaded(mid, mk["users"])
+                self.event("auto-unload", mid, f"loaded just for {mk['why']}")
+                done.append(mid)
         return done
 
 

@@ -13,7 +13,7 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .common import USAGE, BadRequest, DeviceError, clamp_int, error_message, guess_mime, host_only, mask
+from .common import BORROWED, USAGE, BadRequest, DeviceError, clamp_int, error_message, guess_mime, host_only, mask
 
 if TYPE_CHECKING:
     from .settings import Settings
@@ -298,6 +298,7 @@ def pick_model(info, kind: str):
 
 def ensure_loaded(info, model_id: str, timeout: float = 900, job=None):
     """Load a model (if needed) and wait until it serves requests."""
+    BORROWED.keep(model_id)   # this work relies on it now: it isn't unloaded when 🎤 or 🔊 are done with it
     if not model_id or model_id == "default" or model_id in running_ids(info):
         return
     if job:
