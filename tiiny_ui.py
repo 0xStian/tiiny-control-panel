@@ -61,7 +61,8 @@ from pathlib import Path
 if os.name == "nt":  # the in-page terminal needs a Unix pseudo-terminal
     sys.exit("Tiiny Control Panel runs on Linux and macOS. Windows isn't supported yet.")
 
-from tiinyui import VERSION, activity, backup, commands, decide, firmware, gateway, history, launcher, mcp, npu, selfupdate, tools, webfetch, websearch
+from tiinyui import (VERSION, activity, agenttools, backup, commands, decide, device, firmware, gateway, history, launcher, mcp, npu,
+                     routines, selfupdate, tools, turns, webfetch, websearch)
 from tiinyui.browserauth import CODE_TTL, STORAGE_KEY, BrowserAuth
 from tiinyui.clitools import Runtime
 from tiinyui.common import BORROWED, USAGE, BadRequest, DeviceError, clamp_int, data_dir, error_message, guess_mime, mask, safe_name, valid_id
@@ -102,6 +103,8 @@ PAIRING: Pairing
 BROWSER: BrowserAuth
 HTTPD = None
 GATEWAY = None  # the gateway for other apps (tiinyui/gateway.py), started in main()
+TURNS = None    # chat replies the panel writes (tiinyui/turns.py), made in main()
+ROUTINES = None  # things the panel does on a schedule (tiinyui/routines.py), started in main()
 LAN = {"server": None, "ip": "", "port": 0, "error": ""}
 LAN_LOCK = threading.Lock()
 TLS = {}
@@ -153,6 +156,17 @@ class Handler(BaseHTTPRequestHandler):
         ("POST", r"/api/dev/stream", "api_dev_stream"),
         ("GET", r"/api/dev/icon", "api_dev_icon"),
         ("POST", r"/api/chat", "api_chat"),
+        ("POST", r"/api/chats/([\w-]+)/turn", "api_turn_start"),
+        ("GET", r"/api/chats/([\w-]+)/turn", "api_turn_get"),
+        ("GET", r"/api/turns", "api_turns"),
+        ("GET", r"/api/turns/([\w-]+)/stream", "api_turn_stream"),
+        ("POST", r"/api/turns/([\w-]+)/approve", "api_turn_approve"),
+        ("POST", r"/api/turns/([\w-]+)/stop", "api_turn_stop"),
+        ("GET", r"/api/routines", "api_routines"),
+        ("POST", r"/api/routines", "api_routine_create"),
+        ("PATCH", r"/api/routines/([\w-]+)", "api_routine_update"),
+        ("DELETE", r"/api/routines/([\w-]+)", "api_routine_delete"),
+        ("POST", r"/api/routines/([\w-]+)/run", "api_routine_run"),
         ("POST", r"/api/cli", "api_cli"),
         ("GET", r"/api/pty", "api_pty_list"),
         ("POST", r"/api/pty", "api_pty_start"),
@@ -811,122 +825,113 @@ class Handler(BaseHTTPRequestHandler):
     # -- API: chat through the device's OpenAI-compatible endpoint ----------------------
     def api_chat(self, q):
         body = self.read_json()
-        messages = body.get("messages")
-        if not isinstance(messages, list) or not messages:
-            raise BadRequest("messages must be a non-empty list")
-        model = str(body.get("model") or "default")
+        payload, extras = device.chat_request(body)
+        model = payload["model"]
         USAGE.touch(model)
-        payload = {"model": model, "messages": messages, "stream": True}
-        for k in ("temperature", "top_p", "max_tokens"):
-            v = body.get(k)
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                payload[k] = v
-        if isinstance(body.get("tools"), list) and body["tools"]:
-            payload["tools"] = body["tools"][:64]
-            choice = body.get("tool_choice")
-            if choice in ("auto", "none", "required") or isinstance(choice, dict):
-                payload["tool_choice"] = choice
-        extras = {}
-        thinking = body.get("thinking")
-        if isinstance(thinking, bool):
-            extras["chat_template_kwargs"] = {"enable_thinking": thinking}
-            depth = body.get("depth")
-            if thinking and isinstance(depth, str) and re.fullmatch(r"[a-z]{2,12}", depth):
-                extras["reasoning_effort"] = depth
         title = str(body.get("title") or "").strip()[:120] or None
         info = DEVCONN.resolve()
         self.sse_start()
-        attempts = [dict(payload, **extras), payload] if extras else [payload]
         with activity.track("/v1/chat/completions", model, title=title, href=activity.route(body.get("from")),
                             phone=self.is_remote()):
-            for i, body_obj in enumerate(attempts):
-                t_sent = time.time()
-                try:
-                    conn, resp = device_open(info, "core", "POST", "/v1/chat/completions", body=json.dumps(body_obj).encode(),
-                                             headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-                                             timeout=600)
-                except DeviceError as e:
-                    self.sse("error", {"message": str(e)})
-                    return
-                if resp.status >= 400:
-                    text = resp.read(20_000).decode("utf-8", "replace")
-                    conn.close()
-                    try:
-                        data = json.loads(text)
-                    except ValueError:
-                        data = None
-                    if extras and i == 0 and resp.status in (400, 422):
-                        self.sse("info", {"text": "The device didn't accept the thinking options, so this reply uses the "
-                                                  "model's default thinking mode."})
-                        continue
-                    self.sse("error", {"message": f"The device answered HTTP {resp.status}: {error_message(data, text, resp.status)}",
-                                       "status": resp.status})
-                    return
-                try:
-                    self.relay_completion(resp, model, t_sent)
-                finally:
-                    conn.close()
-                return
+            try:
+                for ev in device.stream_chat(info, payload, extras):
+                    if ev[0] == "delta":
+                        self.sse("delta", {"content": ev[1], "reasoning": ev[2]})
+                    elif ev[0] == "tool_delta":
+                        self.sse("tool_delta", {"tool_calls": ev[1]})
+                    elif ev[0] == "info":
+                        self.sse("info", {"text": ev[1]})
+                    elif ev[0] == "done":
+                        st = ev[1]
+                        self.sse("done", {"usage": st["usage"], "finish_reason": st["finish_reason"], "model": st["model"]})
+                        if st["ttft"] is not None:
+                            METRICS.record_speed(st["model"], st["ttft"], st["tps"], st["tokens"])
+            except device.ChatError as e:
+                self.sse("error", {"message": str(e), **({"status": e.status} if e.status else {})})
+            except DeviceError as e:
+                self.sse("error", {"message": str(e)})
 
-    def relay_completion(self, resp, model, t_sent=None):
-        usage, finish, served = None, None, model
-        t_first = t_last = None
-        pieces = 0
-        if "event-stream" not in (resp.headers.get("Content-Type") or ""):
-            raw = resp.read()
-            try:
-                data = json.loads(raw)
-            except ValueError:
-                self.sse("error", {"message": "Unexpected reply from the device: " + raw[:300].decode("utf-8", "replace")})
+    # -- API: chat replies the panel writes (tiinyui/turns.py) ---------------------------------------------------
+    def api_turn_start(self, cid, q):
+        self.read_json()
+        job = TURNS.start(cid, remote=self.is_remote())
+        self.send_json(200, {"job": job.info()})
+
+    def api_turn_get(self, cid, q):
+        turn = TURNS.running_for(cid)
+        self.send_json(200, {"job": turn.job.info() if turn else None})
+
+    def api_turns(self, q):
+        self.send_json(200, TURNS.listing())
+
+    def api_turn_stream(self, jid, q):
+        """The reply as it's written: a snapshot, then numbered events after it (?since=n: only the ones after n)."""
+        turn = TURNS.get(jid)
+        if turn is None:
+            return self.send_json(404, {"error": "That reply isn't being written any more."})
+        job = turn.job
+        try:
+            since = max(0, int(q.get("since", ["0"])[0] or 0))
+        except ValueError:
+            since = 0
+        self.sse_start()
+
+        def snapshot():
+            n, msg = turn.snapshot()
+            self.sse("snapshot", {"n": n, "message": msg, "rev": turn.rev, "chat": turn.chat_id})
+            return n
+        if since == 0 or not job.events_since(since)[1]:
+            since = snapshot()
+        while True:
+            version = job.version
+            evs, complete = job.events_since(since)
+            if not complete:   # it missed too much: start again from a snapshot
+                since = snapshot()
+                continue
+            for e in evs:
+                self.sse(e["kind"], dict(e["data"] or {}, n=e["n"]))
+                since = e["n"]
+            if job.finished and not job.events_since(since)[0]:
+                self.sse("end", {"status": job.status, "error": job.error, "rev": turn.rev})
                 return
-            choice = (data.get("choices") or [{}])[0]
-            msg = choice.get("message") or {}
-            self.sse("delta", {"content": text_of(msg.get("content")),
-                               "reasoning": text_of(msg.get("reasoning_content") or msg.get("reasoning"))})
-            if msg.get("tool_calls"):
-                self.sse("tool_delta", {"tool_calls": [dict(tc, index=i) for i, tc in enumerate(msg["tool_calls"])]})
-            self.sse("done", {"usage": data.get("usage"), "finish_reason": choice.get("finish_reason"),
-                              "model": data.get("model") or model})
-            return
-        for raw in resp:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                obj = json.loads(data)
-            except ValueError:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            if obj.get("error"):
-                err = obj["error"]
-                self.sse("error", {"message": err.get("message", str(err)) if isinstance(err, dict) else str(err)})
-                return
-            served = obj.get("model") or served
-            if obj.get("usage"):
-                usage = obj["usage"]
-            for choice in obj.get("choices") or []:
-                delta = choice.get("delta") or choice.get("message") or {}
-                content = text_of(delta.get("content"))
-                reasoning = text_of(delta.get("reasoning_content") or delta.get("reasoning"))
-                if content or reasoning or delta.get("tool_calls"):
-                    t_last = time.time()
-                    t_first = t_first or t_last
-                    pieces += 1
-                if content or reasoning:
-                    self.sse("delta", {"content": content, "reasoning": reasoning})
-                if delta.get("tool_calls"):
-                    self.sse("tool_delta", {"tool_calls": delta["tool_calls"]})
-                if choice.get("finish_reason"):
-                    finish = choice["finish_reason"]
-        self.sse("done", {"usage": usage, "finish_reason": finish, "model": served})
-        if t_first and t_sent:  # feeds the speed leaderboard
-            tokens = (usage or {}).get("completion_tokens") or pieces
-            gen = t_last - t_first
-            METRICS.record_speed(served, t_first - t_sent, (tokens - 1) / gen if gen > 0.2 and tokens > 1 else None, tokens)
+            if JobManager.wait(job, version, 15) == version:
+                self.wfile.write(b": ping\n\n")
+
+    def api_turn_approve(self, jid, q):
+        body = self.read_json()
+        try:
+            out = TURNS.approve(jid, body.get("step"), str(body.get("decision") or ""), remote=self.is_remote())
+        except PermissionError as e:
+            return self.send_json(403, {"error": str(e)})
+        self.send_json(200, out)
+
+    def api_turn_stop(self, jid, q):
+        self.read_json()
+        self.send_json(200, {"stopped": TURNS.stop(jid)})
+
+    # -- API: routines (tiinyui/routines.py) ------------------------------------------------------------------------
+    def api_routines(self, q):
+        self.send_json(200, {"routines": ROUTINES.list(), "now": time.time()})
+
+    def api_routine_create(self, q):
+        try:
+            self.send_json(200, ROUTINES.create(self.read_json(), remote=self.is_remote()))
+        except PermissionError as e:
+            self.send_json(403, {"error": str(e)})
+
+    def api_routine_update(self, rid, q):
+        try:
+            self.send_json(200, ROUTINES.update(rid, self.read_json(), remote=self.is_remote()))
+        except PermissionError as e:
+            self.send_json(403, {"error": str(e)})
+
+    def api_routine_delete(self, rid, q):
+        self.read_json()
+        self.send_json(200, {"deleted": ROUTINES.delete(rid)})
+
+    def api_routine_run(self, rid, q):
+        self.read_json()
+        self.send_json(200, ROUTINES.run_now(rid))
 
     # -- API: data store ------------------------------------------------------------------
     def api_store_list(self, coll, q):
@@ -948,7 +953,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, rec)
 
     def api_store_put(self, coll, rid, q):
-        self.send_json(200, STORE.put(coll, self.read_json(), rid))
+        rec = self.read_json()
+        if coll == "chats" and isinstance(rec, dict) and TURNS is not None:
+            # the panel writes replies (tiinyui/turns.py): a page with an older copy keeps the saved messages
+            with STORE.locks["chats"]:
+                rec, kept = TURNS.merge_put(rid, rec)
+                out = STORE.put(coll, rec, rid)
+            return self.send_json(200, dict(out, messages_kept=True) if kept else out)
+        self.send_json(200, STORE.put(coll, rec, rid))
 
     def api_store_delete(self, coll, rid, q):
         self.read_json()
@@ -980,7 +992,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"jobs": [j.info() for j in JOBS.list(kind, **meta)]})
 
     def api_job(self, jid, q):
-        self.send_json(200, self._job(jid).info(with_log=True))
+        self.send_json(200, self._job(jid).info(with_log=True, with_live=True))
 
     def api_job_stream(self, jid, q):
         job = self._job(jid)
@@ -989,7 +1001,7 @@ class Handler(BaseHTTPRequestHandler):
         while True:
             if job.version != version:
                 version = job.version
-                self.sse("job", job.info(with_log=bool(q.get("log"))))
+                self.sse("job", job.info(with_log=bool(q.get("log")), with_live=True))
                 if job.finished:
                     return
             else:
@@ -1675,14 +1687,6 @@ class Handler(BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
 
-def text_of(value) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "".join(p.get("text", "") for p in value if isinstance(p, dict))
-    return ""
-
-
 def lan_start():
     """The second listener, on this computer's local-network address, for paired devices only."""
     with LAN_LOCK:
@@ -1750,7 +1754,7 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
-    global SETTINGS, RT, DEVCONN, STORE, PROJECTS, REVIEWS, GALLERY, STUDIO, MEETINGS, METRICS, PAIRING, BROWSER, HTTPD, VERBOSE, ALLOW_COMMANDS, GATEWAY
+    global SETTINGS, RT, DEVCONN, STORE, PROJECTS, REVIEWS, GALLERY, STUDIO, MEETINGS, METRICS, PAIRING, BROWSER, HTTPD, VERBOSE, ALLOW_COMMANDS, GATEWAY, TURNS, ROUTINES
     if sys.argv[1:2] == ["mcp"]:   # python3 tiiny_ui.py mcp: the stdio bridge for AI assistants (tiinyui/mcp.py)
         sys.exit(mcp.bridge_main(sys.argv[2:]))
     ap = argparse.ArgumentParser(description="Local web interface for your Tiiny device.")
@@ -1808,6 +1812,10 @@ def main():
     MEETINGS = Meetings(STORE, DEVCONN, JOBS, RT, PROJECTS)
     METRICS = Metrics(DEVCONN, SETTINGS, JOBS, STORE.root / "metrics")
     npu.setup(DEVCONN, SETTINGS, METRICS)
+    TURNS = turns.Turns(agenttools.Env(DEVCONN, SETTINGS, STORE, PROJECTS, GALLERY, JOBS, RT, allow_commands=ALLOW_COMMANDS,
+                                       right_now=lambda info, npu_j, inst_j: Handler.right_now(info, {"npu": {"json": npu_j}, "instances": {"json": inst_j}})),
+                        METRICS)
+    ROUTINES = routines.Routines(STORE, TURNS, REVIEWS, JOBS, DEVCONN, SETTINGS)
     PAIRING = Pairing(CONFIG_DIR / "devices.json")
     if bool(args.tls_cert) != bool(args.tls_key):
         sys.exit("--tls-cert and --tls-key go together.")
@@ -1840,6 +1848,7 @@ def main():
                               mcp=mcp.Server(tools.Toolbox(DEVCONN, SETTINGS, GALLERY, RT)).handle)
     GATEWAY.apply()
     gw = GATEWAY.status()
+    ROUTINES.start()
 
     print(f"Tiiny Control Panel {VERSION}")
     print(f"  tiiny CLI : {RT.bin or 'not found (interactive features need it)'}" + (f"  ({RT.cli_version})" if RT.cli_version else ""))

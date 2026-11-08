@@ -431,6 +431,10 @@ select.input { padding-right: 28px; cursor: pointer; max-width: 100%; }
 .chat-item:hover { background: var(--panel-2); color: var(--text); }
 .chat-item.active { background: var(--accent-soft); color: var(--accent); }
 .chat-item .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.chat-item .chat-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse-dot 1.4s ease-in-out infinite; }
+.chat-item .chat-dot.waiting { background: var(--warn); animation: none; }
+@keyframes pulse-dot { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .chat-item .chat-dot { animation: none; } }
 .chat-item .x { opacity: 0; border: 0; background: transparent; color: var(--faint); cursor: pointer; padding: 2px; border-radius: 5px; }
 .chat-item:hover .x { opacity: 1; }
 .chat-item .x:hover { color: var(--err); background: var(--err-soft); }
@@ -792,6 +796,31 @@ code.block { display: block; padding: 8px 10px; border-radius: 8px; background: 
 .snippets { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 14px; }
 .snippet { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .snippet-head { display: flex; align-items: center; gap: 8px; }
+/* Routines (static/js/routines.js) */
+.routine-list { display: flex; flex-direction: column; gap: 10px; }
+.routine-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); min-width: 0; }
+.routine-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.routine-actions { display: flex; gap: 6px; align-items: center; flex: none; }
+.routine-last { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.routine-summary { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 160px; }
+.routine-templates { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.routine-template { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); color: var(--text); font: inherit; }
+.routine-template:hover { border-color: var(--accent); background: var(--accent-soft); }
+.routine-template .icon { color: var(--accent); }
+.routine-runs { display: flex; flex-direction: column; gap: 8px; }
+.routine-run { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.routine-run:last-child { border-bottom: 0; }
+@media (max-width: 600px) {
+  .routine-row { flex-wrap: wrap; }
+  .routine-actions { width: 100%; justify-content: flex-end; }
+}
+
+/* Code review: what the model is writing while it reviews (static/js/review.js) */
+.review-live > summary { cursor: pointer; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.review-live-text { max-height: 240px; min-height: 64px; overflow: auto; margin: 0; padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
+  font: 12px/1.5 var(--mono); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--muted); }
+.review-log { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
 /* Integrations: apps that use your Tiiny through the gateway (static/js/integrations.js) */
 .app-list { display: flex; flex-direction: column; gap: 10px; }
 .app-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); min-width: 0; }

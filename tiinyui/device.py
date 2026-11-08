@@ -345,6 +345,135 @@ def chat(info, model: str, messages: list, *, thinking=None, max_tokens=None, te
             "usage": data.get("usage") or {}, "finish_reason": choice.get("finish_reason")}
 
 
+class ChatError(DeviceError):
+    """The device refused or broke off a chat completion. `status` is its HTTP status when it answered with one."""
+
+    def __init__(self, message: str, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+def _text_of(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(p.get("text", "") for p in value if isinstance(p, dict))
+    return ""
+
+
+def stream_chat(info, payload: dict, extras: dict = None, *, timeout: float = 600):
+    """A chat completion from the device, as it streams. The chat page (through /api/chat), code reviews and turns all
+    read answers this way. Yields:
+      ("info", text)                  e.g. the device didn't take the thinking options, so they were left out
+      ("delta", content, reasoning)   pieces of the answer and of the reasoning
+      ("tool_delta", tool_calls)      pieces of tool calls, as the device sends them (OpenAI's streaming format)
+      ("done", stats)                 {usage, finish_reason, model, ttft, tps, tokens}
+    Raises ChatError when the device refuses (HTTP error) or reports an error inside the stream, DeviceError when it
+    can't be reached. `extras` (thinking options) are tried first, then left out if the device rejects them."""
+    model = payload.get("model") or "default"
+    attempts = [dict(payload, **extras), payload] if extras else [payload]
+    for i, body in enumerate(attempts):
+        t_sent = time.time()
+        conn, resp = device_open(info, "core", "POST", "/v1/chat/completions", body=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "Accept": "text/event-stream"}, timeout=timeout)
+        try:
+            if resp.status >= 400:
+                text = resp.read(20_000).decode("utf-8", "replace")
+                try:
+                    data = json.loads(text)
+                except ValueError:
+                    data = None
+                if extras and i == 0 and resp.status in (400, 422):
+                    yield ("info", "The device didn't accept the thinking options, so this reply uses the model's default thinking mode.")
+                    continue
+                raise ChatError(f"The device answered HTTP {resp.status}: {error_message(data, text, resp.status)}", resp.status)
+            if "event-stream" not in (resp.headers.get("Content-Type") or ""):
+                raw = resp.read()
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    raise ChatError("Unexpected reply from the device: " + raw[:300].decode("utf-8", "replace"))
+                choice = (data.get("choices") or [{}])[0]
+                msg = choice.get("message") or {}
+                yield ("delta", _text_of(msg.get("content")), _text_of(msg.get("reasoning_content") or msg.get("reasoning")))
+                if msg.get("tool_calls"):
+                    yield ("tool_delta", [dict(tc, index=n) for n, tc in enumerate(msg["tool_calls"])])
+                yield ("done", {"usage": data.get("usage"), "finish_reason": choice.get("finish_reason"),
+                                "model": data.get("model") or model, "ttft": None, "tps": None, "tokens": None})
+                return
+            usage, finish, served = None, None, model
+            t_first = t_last = None
+            pieces = 0
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("error"):
+                    err = obj["error"]
+                    raise ChatError(err.get("message", str(err)) if isinstance(err, dict) else str(err))
+                served = obj.get("model") or served
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                for choice in obj.get("choices") or []:
+                    delta = choice.get("delta") or choice.get("message") or {}
+                    content = _text_of(delta.get("content"))
+                    reasoning = _text_of(delta.get("reasoning_content") or delta.get("reasoning"))
+                    if content or reasoning or delta.get("tool_calls"):
+                        t_last = time.time()
+                        t_first = t_first or t_last
+                        pieces += 1
+                    if content or reasoning:
+                        yield ("delta", content, reasoning)
+                    if delta.get("tool_calls"):
+                        yield ("tool_delta", delta["tool_calls"])
+                    if choice.get("finish_reason"):
+                        finish = choice["finish_reason"]
+            stats = {"usage": usage, "finish_reason": finish, "model": served, "ttft": None, "tps": None, "tokens": None}
+            if t_first:   # for the speed leaderboard
+                tokens = (usage or {}).get("completion_tokens") or pieces
+                gen = t_last - t_first
+                stats.update(ttft=t_first - t_sent, tps=(tokens - 1) / gen if gen > 0.2 and tokens > 1 else None, tokens=tokens)
+            yield ("done", stats)
+            return
+        finally:
+            conn.close()
+
+
+def chat_request(body: dict) -> tuple:
+    """(payload, extras) for /v1/chat/completions from a chat request in the panel's own shape: model, messages,
+    temperature/top_p/max_tokens, tools and tool_choice, thinking (on/off) and depth. Raises BadRequest."""
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise BadRequest("messages must be a non-empty list")
+    payload = {"model": str(body.get("model") or "default"), "messages": messages, "stream": True}
+    for k in ("temperature", "top_p", "max_tokens"):
+        v = body.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            payload[k] = v
+    if isinstance(body.get("tools"), list) and body["tools"]:
+        payload["tools"] = body["tools"][:64]
+        choice = body.get("tool_choice")
+        if choice in ("auto", "none", "required") or isinstance(choice, dict):
+            payload["tool_choice"] = choice
+    extras = {}
+    thinking = body.get("thinking")
+    if isinstance(thinking, bool):
+        extras["chat_template_kwargs"] = {"enable_thinking": thinking}
+        depth = body.get("depth")
+        if thinking and isinstance(depth, str) and re.fullmatch(r"[a-z]{2,12}", depth):
+            extras["reasoning_effort"] = depth
+    return payload, extras
+
+
 def embed(info, model: str, texts: list, batch: int = 32, job=None) -> list:
     """Embeddings for many texts, batched. Returns one vector (list of floats) per text."""
     out = []

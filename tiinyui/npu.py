@@ -8,6 +8,11 @@ How much NPU memory a model takes (share): the share its store entry lists, else
 loaded the model (settings: npu_footprints), else an estimate from its size on disk. How much is free: the card's own
 numbers from /api/v1/npu/status (it reports while a model is loaded), else the card's size minus the loaded shares.
 
+The device keeps its own count too: the listed shares (npu_usage, a percentage) of the loaded and loading models may add
+up to 100% at most. A load that would go over makes the device unload a loaded model by itself, at once, even when the
+memory really in use leaves room (measured 2026-11-08: GLM-4.7-Flash 57% + Qwen3-8B 28% loaded, starting KnowLine 17%
+unloaded GLM, with 11 of 49 GB still free). So a model fits only when both counts leave room.
+
 The device never loads a model by itself (a request for one that isn't loaded gets 404 "is not loaded"), and it
 answers /stop in under a second. Loads and unloads happen one at a time, under one lock, so several apps asking at
 once queue up instead of racing each other.
@@ -15,6 +20,8 @@ once queue up instead of racing each other.
 Policies, from careful to helpful:
   loaded     use a model only when it's loaded already
   fits       load it when it fits next to the loaded models; never unload anything
+  borrowed   like fits, but may unload idle models that were only loaded for a moment (common.Borrowed, given back and not
+             in use), never others: what routines use, so one routine's model doesn't block the next
   make_room  unload idle models to make room: borrowed ones first (they were only loaded for a moment, see
              common.Borrowed), then the least recently used. Never pinned ones, busy ones, the ones a running job uses
              or the ones the caller protects.
@@ -35,13 +42,13 @@ CARD_MB = 49024         # the Tiiny's NPU card (LQ50-48GB) when it doesn't repor
 MARGIN_MB = 512         # left free when the planner decides a model fits
 DL_BUSY = re.compile(r"^(downloading|queued|pending|paused|waiting|preparing|converting|importing|verifying|extracting)$", re.I)
 NO_ROOM = re.compile(r"memory|insufficient|not enough|capacity|resource|exceed|npu", re.I)
-POLICIES = ("loaded", "fits", "make_room")
+POLICIES = ("loaded", "fits", "borrowed", "make_room")
 MODELS_TTL = 30         # seconds the device's model list is reused
 
 _lock = threading.RLock()
 _ctx = {"devconn": None, "settings": None, "metrics": None}
 _models = {"at": 0.0, "list": []}
-_job_models = {}        # job id -> (job, model id): what running background jobs are using
+_job_models = {}        # "job id model id" -> (job, model id): what running background jobs are using (a chat turn can use several)
 
 
 class NotReady(DeviceError):
@@ -112,6 +119,11 @@ def share(m: dict, total_mb: float = CARD_MB) -> dict:
     return {"mb": 8192.0, "source": "unknown"}
 
 
+def listed_pct(m: dict) -> float:
+    """The share of NPU memory the device lists for a model, in percent (0 when it lists none); see the module notes."""
+    return _num(m.get("npu_usage")) or 0.0
+
+
 def _protected(protect=()) -> dict:
     """Models that are never unloaded to make room, with the reason."""
     out = {}
@@ -131,8 +143,9 @@ def _last_used(mid) -> float:
     return (m.last_used(mid) if m else None) or 0.0
 
 
-def plan(model: str, protect=(), info=None, st=None) -> dict:
-    """Does `model` fit, and if not, which loaded models could be unloaded to make room (and which can't)."""
+def plan(model: str, protect=(), info=None, st=None, only_borrowed=False) -> dict:
+    """Does `model` fit, and if not, which loaded models could be unloaded to make room (and which can't). With
+    only_borrowed, only idle models loaded just for a moment may be unloaded (the "borrowed" policy)."""
     info = info or _ctx["devconn"].resolve()
     st = st or state(info)
     by_id = {m["id"]: m for m in models(info)}
@@ -148,26 +161,35 @@ def plan(model: str, protect=(), info=None, st=None) -> dict:
         free = total - sum(share(by_id.get(x, {"id": x}), total)["mb"] for x in others)
         confident = sh["source"] in ("listed", "measured") and all(share(by_id.get(x, {"id": x}), total)["source"] in ("listed", "measured") for x in others)
     need = sh["mb"] + MARGIN_MB
+    # the device's own count: listed shares of everything loaded or loading, plus this one, at most 100%
+    pct_need = listed_pct(m)
+    pct_used = sum(listed_pct(by_id.get(x, {"id": x})) for x in others)
+    pct_over = bool(pct_need) and pct_used + pct_need > 100
     out = {"model": model, "loaded": model in st["ready"], "need_mb": round(sh["mb"]), "free_mb": round(max(0.0, free)),
-           "source": sh["source"], "confident": confident, "fits": model in st["ready"] or need <= free,
-           "unload": [], "blocked_by": [], "loaded_models": others}
+           "source": sh["source"], "confident": confident or pct_over, "fits": model in st["ready"] or (need <= free and not pct_over),
+           "need_pct": round(pct_need), "loaded_pct": round(pct_used), "unload": [], "blocked_by": [], "loaded_models": others}
     if out["fits"]:
         return out
     keep = _protected(protect)
     busy = st["busy"] | activity.busy_models() | ((_ctx["metrics"].busy if _ctx["metrics"] else set()) or set())
-    lent = set(BORROWED.snapshot())
+    marks = BORROWED.snapshot()
+    lent = set(marks)
     candidates, blocked = [], []
     for x in others:
         why = keep.get(x) or ("busy" if x in busy else "loading" if x in st["pending"] else None)
+        if not why and only_borrowed and (x not in marks or marks[x]["users"]):
+            why = "yours" if x not in marks else "in use"
         (blocked if why else candidates).append((x, why))
     candidates.sort(key=lambda c: (c[0] not in lent, _last_used(c[0])))   # borrowed first, then the least recently used
-    freed = 0.0
+    freed = freed_pct = 0.0
+    room = lambda: need <= free + freed and not (pct_need and pct_used - freed_pct + pct_need > 100)
     for x, _ in candidates:
-        if need <= free + freed:
+        if room():
             break
         out["unload"].append(x)
         freed += share(by_id.get(x, {"id": x}), total)["mb"]
-    if need > free + freed:
+        freed_pct += listed_pct(by_id.get(x, {"id": x}))
+    if not room():
         out["unload"] = []
         out["blocked_by"] = [{"model": x, "why": why} for x, why in blocked]
     return out
@@ -177,7 +199,11 @@ def describe(p: dict) -> str:
     """Why a model doesn't fit, in plain words."""
     name = short(p["model"])
     gb = lambda mb: f"{mb / 1024:.1f} GB"
-    text = f"{name} doesn't fit in NPU memory right now: it needs about {gb(p['need_mb'])} and {gb(p['free_mb'])} is free."
+    if p.get("need_pct") and p.get("loaded_pct", 0) + p["need_pct"] > 100:
+        text = (f"{name} doesn't fit in NPU memory right now: your Tiiny counts it as {p['need_pct']}% and the loaded models "
+                f"as {p['loaded_pct']}%, and it keeps that at 100% at most.")
+    else:
+        text = f"{name} doesn't fit in NPU memory right now: it needs about {gb(p['need_mb'])} and {gb(p['free_mb'])} is free."
     if p.get("blocked_by"):
         text += " " + ", ".join(f"{short(b['model'])} is {b['why']}" for b in p["blocked_by"]) + "."
     elif p.get("loaded_models"):
@@ -191,6 +217,19 @@ def _stop(info, mid):
     deadline = time.time() + 20
     while time.time() < deadline and mid in set(device.running_ids(info)):
         time.sleep(0.5)
+
+
+def unload(model: str, info=None) -> bool:
+    """Unload a model now, under the planner's lock (so it can't race a load). True when it's gone."""
+    info = info or _ctx["devconn"].resolve()
+    with _lock:
+        try:
+            _stop(info, model)
+            gone = model not in set(device.running_ids(info))
+        except DeviceError:
+            return False
+        forget_models()
+    return gone
 
 
 def _wait_ready(info, model, meta, job=None) -> None:
@@ -229,10 +268,11 @@ def ensure_ready(model: str, *, policy: str = "fits", protect=(), requester: str
         return {"model": model, "loaded_now": False, "unloaded": []}
     info = info or _ctx["devconn"].resolve()
     if job is not None:
-        _job_models[job.id] = (job, model)
-        for jid in [k for k, (j, _) in list(_job_models.items()) if j.finished]:
-            _job_models.pop(jid, None)
-        BORROWED.keep(model)   # a background job relies on it: it isn't unloaded when 🎤 or 🔊 are done with it
+        _job_models[f"{job.id} {model}"] = (job, model)
+        for key in [k for k, (j, _) in list(_job_models.items()) if j.finished]:
+            _job_models.pop(key, None)
+        if not (getattr(job, "meta", None) or {}).get("routine"):   # a routine's job gives back what it loaded (routines.py)
+            BORROWED.keep(model)   # a background job relies on it: it isn't unloaded when 🎤 or 🔊 are done with it
     try:
         if model in set(device.running_ids(info)):   # loaded: no need to wait for another app's load
             return {"model": model, "loaded_now": False, "unloaded": []}
@@ -254,10 +294,10 @@ def ensure_ready(model: str, *, policy: str = "fits", protect=(), requester: str
             if policy == "loaded":
                 raise NotReady(f"{short(model)} isn't loaded{f', and {requester} may only use loaded models' if requester else ''}. "
                                "Load it on the Models page.")
-            p = plan(model, protect, info, st)
+            p = plan(model, protect, info, st, only_borrowed=policy == "borrowed")
             unloaded = []
             if not p["fits"]:
-                if policy == "make_room" and p["unload"]:
+                if policy in ("make_room", "borrowed") and p["unload"]:
                     for mid in p["unload"]:
                         if job:
                             job.update(message=f"Unloading {short(mid)} to make room…")

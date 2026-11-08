@@ -11,7 +11,7 @@ For the short version, see the [README](../README.md).
 - [Your first five minutes](#your-first-five-minutes)
 - [The dashboard](#the-dashboard)
 - [The pages, one by one](#the-pages-one-by-one)
-  - [Models](#models) · [Chat](#chat) · [Agent mode](#agent-mode) · [Projects](#projects) · [Vault](#vault) · [Meetings](#meetings)
+  - [Models](#models) · [Chat](#chat) · [Agent mode](#agent-mode) · [Projects](#projects) · [Vault](#vault) · [Meetings](#meetings) · [Routines](#routines)
   - [Code review](#code-review) · [Playground](#playground) · [Studio](#studio) · [Gallery](#gallery)
   - [Connectors](#connectors) · [Integrations](#integrations) · [Network](#network) · [Account](#account) · [Terminal](#terminal) · [System](#system)
 - [Decision models](#decision-models)
@@ -185,9 +185,10 @@ another one to make room.
 3. **Activity.** A log of every request and `tiiny` command the page ran, with the output. Useful when something fails.
 4. **Right now.** What your Tiiny is working on, one line per task: the kind of work (a chat, an image, a decision, …),
    the model, who asked for it and how long it has been running. When nothing runs it says *Idle*, with what ran last.
-   - **This panel's work is named.** You see *Chat: Trip plans*, *Reviewing my-project* or *Making an image ·
-     Playground*, with **Open** to go to that chat or page. Background jobs (code reviews, Studio renders, meeting
-     notes, project indexing, Gallery tags) show their progress.
+   - **This panel's work is named.** You see *Chat: Trip plans*, *Routine: Morning briefing*, *Reviewing my-project*
+     or *Making an image · Playground*, with **Open** to go to that chat or page. Background jobs (chat replies, code
+     reviews, Studio renders, meeting notes, project indexing, Gallery tags) show their progress, and a reply that
+     waits for your OK says so.
    - **Other programs** show by name when the device knows them (for example *KiloCode* from the Agent Store). Anything
      else that uses the device's API shows as *Another app or computer*.
    - Models loading or downloading show here too, with their progress.
@@ -225,6 +226,11 @@ Further down the dashboard you'll find **History** (charts of the last 15 minute
 
 If a model doesn't fit next to the loaded ones, a **Make room** dialog suggests which ones to unload (least recently
 used first) and shows how full the NPU will be afterwards.
+
+**Your Tiiny keeps its own count.** The shares it lists for the loaded models (the percentages on the cards) may add
+up to 100% at most. Loading one more would make the Tiiny unload a model by itself, even when the memory bar isn't
+full, because models often use less than their listed share. So the panel counts both ways, and only loads a model
+when both leave room.
 
 ### Chat
 
@@ -265,6 +271,13 @@ The **⋮** menu (top right of the chat) can:
 - clear the chat or delete it.
 
 Under each answer: **Copy**, **Read aloud**, **Regenerate**, and how many tokens it took and how fast.
+
+**Replies keep going without the page.** The panel on your computer writes each reply, not the browser tab:
+- **Close the tab, reload, or lock your phone,** and the reply carries on. Open the chat again and it's there, or still
+  coming in where it is.
+- **On another device:** a reply started on your computer shows up live on your phone, and the other way round.
+- **A dot in the chat list** marks a chat with a reply being written; an orange one means it's waiting for your OK.
+- **Stop** stops the reply and the model at once.
 
 ### Agent mode
 
@@ -319,6 +332,11 @@ python3 tiiny_ui.py --allow-commands
 - Risky-looking commands (deleting many files, running a script from the internet, stopping programs) come with a
   warning on the approval card. Read what you approve: the agent can make mistakes.
 - Phones never get these tools, even when they're on.
+
+**Answering from your phone.** A step that waits for your OK waits until you answer, from the computer or a paired
+phone, even with no page open. The chat list's dot turns orange, and a desktop notification says so when a panel page
+is open in the background. Commands, file changes and opening things on the computer can only be allowed on the
+computer; a phone can still say **Don't**.
 
 **Choosing which tools it may use.** **System → Agent tools** (or *Agent tools…* in a chat's **⋮** menu). A tool
 that's off is never offered to the model, in any chat, so it can't use it. Turning *Past chats, meetings, Gallery*
@@ -411,6 +429,45 @@ When a recording ends, a chat model on your device writes the notes: overview, k
    through sentence by sentence after the summary (or with **Find them**). Click a time to jump to that line. A
    sentence said more than once is listed once, at the first time.
 
+### Routines
+
+Have the panel do things by itself on a schedule. Routines run on this computer, in the panel, even when no page is
+open: the panel just needs to be running.
+
+![Routines](images/routines.png)
+
+1. **New routine** starts from one of these:
+   - **Morning briefing:** an agent prompt on weekdays at 08:00 that searches the web and your Vault.
+   - **Weekly code review:** a folder, reviewed every Friday, saying what's new since last time.
+   - **Your own prompt:** ask the agent anything, on a schedule.
+2. **On or off**, **Run now** (any time, even when it's off), and in **⋮**: edit it, its past runs, or delete it.
+3. **The last run:** how it went, what it said (or how many findings are new), and a link to its chat or review.
+4. **Waiting for your OK:** a routine wanted to run a command or change a file. Open its chat to allow it or say no.
+
+**What a routine does:**
+- **An agent prompt** goes into the routine's own chat each time (named after the routine), and the agent answers
+  there, with your profile, a project and your Vault if you pick them.
+- **A code review** looks at the folder again each time, so new files are included, and reuses one review on the
+  Code review page. A finding counts as new when no earlier one was in the same file with the same title or a line of
+  code in common. A model doesn't report exactly the same findings every time, so an unchanged folder can still show
+  one or two.
+
+**When:** every day, on weekdays, on the days you pick, or every few hours, in this computer's local time.
+
+**Nobody may be watching, so a routine is careful:**
+- **Tools:** tools that only look (search the Vault, check the device, the time) always run. The others run only if
+  you ticked them for the routine; any other is refused for that run, and the agent carries on without it.
+- **Commands and file changes always wait for your OK**, in the routine's chat. The routine shows *Waiting for your
+  OK*, and other routines carry on meanwhile.
+- **Models:** it never unloads your models. A model it has to load is loaded only if it fits, and unloaded again 10
+  minutes after its last use. To make room it may unload a model that was itself only loaded for a moment (by another
+  routine, 🎤 or 🔊).
+- **Your Tiiny is off or locked:** the run waits and tries again every 10 minutes.
+- **The panel was off:** a run it missed by less than 12 hours runs once when the panel starts; older ones are skipped.
+
+**On a phone** you can see your routines, switch them on or off, **Run now**, and set up agent prompts. Code reviews
+of a folder, and routines that may read or change files on the computer, can only be set up on the computer.
+
 ### Code review
 
 Have a model on your device check code for security problems and bugs. Your code never leaves your network.
@@ -418,6 +475,14 @@ Have a model on your device check code for security problems and bugs. Your code
 1. On **Code review**, pick **a folder on this computer**, **a ZIP file**, or **a project's linked folder**, and press **Scan**.
 2. Choose which files to review (*Code only* is a good start), the model (bigger ones catch more) and what to look for: *Security*, *Bugs* or *Both*.
 3. Press **Start review**. You can leave the page; the review keeps running. If your Tiiny stops answering, the review pauses and you can **Resume** it later.
+
+![A code review in progress](images/review-live.png)
+
+1. **Where it is:** the step it's on (*Reading src/orders.py, part 2 of 3*), the bar, which file and part, the time so
+   far and about how long is left. Big files are read in parts, and the bar moves part by part.
+2. **What it's writing:** the model's answer as it writes it, so you can see it's working. It's folded on a phone.
+3. **So far:** what it did, with how many findings each file had. Findings show up in the results below as each file
+   is done.
 
 ![Code review results](images/review.png)
 
@@ -728,7 +793,10 @@ The panel can also listen on your computer's local-network address, but only for
 - no browsing your computer's folders, and no code reviews or project links of folders on the computer (a phone can
   review a ZIP file it uploads);
 - no revealing the API key;
-- no updating the panel, and no backing up or restoring its data.
+- no updating the panel, and no backing up or restoring its data;
+- no allowing the agent to run commands, change files or open things on the computer (a phone can say no), and no
+  agent tools for the computer in replies a phone starts;
+- no routines that review a folder or may read or change files on the computer.
 
 Do those on the computer.
 
@@ -786,7 +854,7 @@ Do those on the computer.
 
 | Where | What |
 |---|---|
-| `~/.local/share/tiiny-ui/` | Your chats, projects (with their search indexes), code reviews, meetings, the Gallery's files, and 7 days of performance history. After a restore, also `.before-restore-…` folders with what the restore replaced. |
+| `~/.local/share/tiiny-ui/` | Your chats, projects (with their search indexes), routines, code reviews, meetings, the Gallery's files, and 7 days of performance history. After a restore, also `.before-restore-…` folders with what the restore replaced. |
 | `.previous/` in the panel's folder | The version from before the last update (only after updating from System → Tiiny Control Panel without git). |
 | `~/.config/tiiny-ui/settings.json` | Panel settings, including measured model sizes. Readable only by you. |
 | `~/.config/tiiny-ui/devices.json` | Paired phones. Only fingerprints of their logins are stored, so the file can't be used to log in. |
@@ -885,6 +953,19 @@ panel never unloads anything to make room for it). **Activity** shows why.
 
 **A model won't load.** The NPU's memory is probably full. The panel offers to unload others. Check the shares on **Models → NPU memory**.
 
+**A model "doesn't fit", but the memory bar isn't full.** Your Tiiny keeps its own count: the shares it lists for
+the loaded models may add up to 100% at most, and models often use less memory than their share. Loading past that
+would make the Tiiny unload a model by itself, so the panel says it doesn't fit instead. Unload one, or pick a
+smaller model.
+
+**A routine didn't run.**
+- **The panel wasn't running:** routines only run while it does. A run missed by less than 12 hours runs when it
+  starts again. To keep it running, [start it automatically](#install-it-as-an-app-or-start-it-automatically).
+- **Your Tiiny was off or locked:** the routine says *Waiting for your Tiiny* and tries again every 10 minutes.
+- **Its model didn't fit** next to your models (a routine never unloads them): the run says so. Pick a smaller model,
+  or unload something before it runs.
+- **It's waiting for your OK:** open its chat.
+
 **An image fails with "Request failed".** The image model ran out of NPU memory next to a big chat model. Unload the chat model,
 or use a smaller size. In agent chats, the panel swaps the models for you.
 
@@ -915,14 +996,20 @@ You can also start the panel with `--verbose`.
 
 - **Talking to the device.** The panel is a small Python web server on your computer. It talks to your Tiiny's HTTP API, the same one the `tiiny` command-line tool uses, documented at [dev.tiiny.ai](https://dev.tiiny.ai/). Interactive things (logging in, activation, Wi-Fi, benchmarks, firmware, restore) run the real `tiiny` tool in a terminal inside the page.
 - **Address and key.** These come from the command-line tool's config. You can override them under **System → Panel settings**.
-- **Long work** (indexing, code reviews, studio renders, meeting notes) runs in the background on the panel's server, with progress and cancel. You can close the tab.
+- **Long work** (chat replies, indexing, code reviews, studio renders, meeting notes) runs in the background on the panel's server, with progress and cancel. You can close the tab.
+- **Chat replies.** The panel writes them: it gathers the context, streams the model's answer and runs the agent's
+  tools, saving the reply as it grows. Pages follow along over a stream of numbered changes, so a page that reconnects
+  picks up where it left off. While a reply is written, only the panel changes that chat's messages; a page with an
+  older copy can't overwrite them.
+- **Routines.** One runner in the panel looks every 30 seconds for routines that are due, and runs one at a time.
 - **Who is using the device.** The Tiiny lists the work running on its models, but every program that doesn't name
   itself, this panel included, shows there as "API". So the panel keeps a note of its own requests while they run (which
   chat, page or job they're for) and matches them to the device's list. That's how **Right now** on the dashboard can
   name them. The notes are kept in memory only.
-- **Making room in NPU memory.** One planner decides whether a model fits, from the NPU card's own numbers, and what
-  could be unloaded to make room. The page, background jobs, apps and tools all ask it, and models load one at a time,
-  so several apps asking at once don't trip over each other.
+- **Making room in NPU memory.** One planner decides whether a model fits, and what could be unloaded to make room.
+  It counts two ways: the memory the NPU card really has in use, and the shares the Tiiny lists for each model, which
+  it keeps at 100% at most. The page, background jobs, routines, apps and tools all ask it, and models load one at a
+  time, so several apps asking at once don't trip over each other.
 - **Other apps** connect to the gateway (`127.0.0.1:8766`), which checks their key, loads the model if needed, and passes
   the request on to your Tiiny with the device's key. Streamed answers stay streamed.
 - **Projects and pinned files** get their own search index, built with the device's embedding models.

@@ -116,6 +116,21 @@ def tts_mode(m: dict) -> str:
     return "builtin"
 
 
+def image_from(data: bytes, ctype: str) -> bytes:
+    """The picture in a device answer: the bytes themselves, or base64 in JSON ({"data": [{"b64_json": …}]} and similar)."""
+    if ctype.startswith("image/") or image_mime(data):
+        return data
+    try:
+        j = json.loads(data)
+    except ValueError:
+        raise ToolError("No picture came back.")
+    item = (j.get("data") or [{}])[0] if isinstance(j.get("data"), list) else j
+    b = item.get("b64_json") or item.get("image") or item.get("b64")
+    if not b:
+        raise ToolError("No picture came back.")
+    return b64decode(b, "picture")
+
+
 def hits(data, limit: int) -> list:
     """Vault passages from /kb/retrieve, whatever shape the answer takes (static/app.js: normalizeHits)."""
     arr = data if isinstance(data, list) else None
@@ -136,10 +151,12 @@ def hits(data, limit: int) -> list:
         meta = x.get("metadata") if isinstance(x.get("metadata"), dict) else {}
         t = next((x[k] for k in ("lossless_restatement", "text", "content", "chunk", "chunk_text", "document", "page_content", "preview", "snippet")
                   if isinstance(x.get(k), str) and x[k].strip()), None) or json.dumps(x)[:2000]
-        t = re.sub(r"^Source file:[^\n]*\n+", "", t).strip()
+        t = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|>~])", r"\1", re.sub(r"^Source file:[^\n]*\n+", "", t)).strip()
         src = next((x[k] for k in ("filename", "file_name", "source_name", "title", "source", "name") if isinstance(x.get(k), str) and x[k]), None) \
             or next((meta[k] for k in ("filename", "source", "title") if isinstance(meta.get(k), str) and meta[k]), "") or str(x.get("source_id") or "")
-        score = x.get("score", x.get("similarity", x.get("relevance")))
+        semantic = next((r for r in x.get("recalls") or [] if isinstance(r, dict) and r.get("arm") == "semantic"), None)
+        score = next((v for v in ((semantic or {}).get("score"), x.get("score"), x.get("similarity"), x.get("relevance"), x.get("relevance_score"))
+                      if isinstance(v, (int, float)) and not isinstance(v, bool)), None)
         out.append({"text": t, "source": src, "score": score if isinstance(score, (int, float)) else None})
     return out[:limit]
 
@@ -281,19 +298,6 @@ class Toolbox:
             raise ToolError(error_message(j, data.decode("utf-8", "replace"), resp.status))
         return data, ctype
 
-    def _image_from(self, data: bytes, ctype: str) -> bytes:
-        if ctype.startswith("image/") or image_mime(data):
-            return data
-        try:
-            j = json.loads(data)
-        except ValueError:
-            raise ToolError("No picture came back.")
-        item = (j.get("data") or [{}])[0] if isinstance(j.get("data"), list) else j
-        b = item.get("b64_json") or item.get("image") or item.get("b64")
-        if not b:
-            raise ToolError("No picture came back.")
-        return b64decode(b, "picture")
-
     def _to_gallery(self, app, data: bytes, mime: str, meta: dict):
         if not self.gallery or not self.rt:
             return None
@@ -347,7 +351,7 @@ class Toolbox:
         model = self._pick("image", a.get("model"), app, info, ok=lambda m: not any(s in m["id"].lower() for s in SINGLE_PURPOSE))
         with self._use(app, model), self._track(app, "/v1/images/generations", model, "picture"):
             data, ctype = self._post(info, "/v1/image/generate", {"model": model, "prompt": prompt, "width": w, "height": h})
-        img = self._image_from(data, ctype)
+        img = image_from(data, ctype)
         mime = image_mime(img) or "image/png"
         gid = self._to_gallery(app, img, mime, {"prompt": prompt, "model": model, "params": {"width": w, "height": h}})
         return ([{"type": "image", "data": base64.b64encode(img).decode(), "mimeType": mime},
@@ -373,7 +377,7 @@ class Toolbox:
         with self._use(app, model), self._track(app, "/v1/images/generations", model, "edit"):
             data, ctype = self._post(info, "/v1/image/generate", {"model": model, "prompt": instruction, "width": w, "height": h,
                                                                   "steps": 20, "image": data_url})
-        img = self._image_from(data, ctype)
+        img = image_from(data, ctype)
         out_mime = image_mime(img) or "image/png"
         gid = self._to_gallery(app, img, out_mime, {"prompt": instruction, "model": model, "params": {"width": w, "height": h, "steps": 20, "edit": True}})
         return ([{"type": "image", "data": base64.b64encode(img).decode(), "mimeType": out_mime},

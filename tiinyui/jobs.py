@@ -43,6 +43,9 @@ class Job:
         self.version = 0
         self.cancel_event = threading.Event()
         self.cond = threading.Condition()
+        self.live = None             # what it's doing right now, for pages that follow it (a code review: the model's text)
+        self.events = []             # numbered events for pages that follow it piece by piece (a chat turn); see emit()
+        self.event_n = 0
 
     def update(self, message: str = None, progress: float = None, log: str = None):
         with self.cond:
@@ -57,6 +60,36 @@ class Job:
             self.version += 1
             self.cond.notify_all()
 
+    MAX_EVENTS = 4000
+
+    def set_live(self, live):
+        """Replace the snapshot of what the job is doing now (pages following the job see it with its next update)."""
+        with self.cond:
+            self.live = live
+            self.updated = time.time()
+            self.version += 1
+            self.cond.notify_all()
+
+    def emit(self, kind: str, data=None) -> int:
+        """Add a numbered event for pages that follow the job live; a page that reconnects asks for what came after the
+        last number it saw. Only the newest MAX_EVENTS are kept (the page then starts from a fresh snapshot)."""
+        with self.cond:
+            self.event_n += 1
+            self.events.append({"n": self.event_n, "kind": kind, "data": data})
+            if len(self.events) > self.MAX_EVENTS:
+                del self.events[:len(self.events) - self.MAX_EVENTS]
+            self.updated = time.time()
+            self.version += 1
+            self.cond.notify_all()
+            return self.event_n
+
+    def events_since(self, n: int):
+        """(events after number n, whether that's all of them: False when older ones were dropped)."""
+        with self.cond:
+            evs = [e for e in self.events if e["n"] > n]
+            complete = not self.events or self.events[0]["n"] <= n + 1
+            return evs, complete
+
     def check(self):
         """Call often inside long work; raises Cancelled when the user pressed Cancel."""
         if self.cancel_event.is_set():
@@ -66,12 +99,14 @@ class Job:
     def finished(self) -> bool:
         return self.status != "running"
 
-    def info(self, with_log=False) -> dict:
+    def info(self, with_log=False, with_live=False) -> dict:
         d = {"id": self.id, "kind": self.kind, "title": self.title, "meta": self.meta, "status": self.status,
              "progress": self.progress, "message": self.message, "error": self.error, "result": self.result,
              "created": self.created, "updated": self.updated, "version": self.version}
         if with_log:
             d["log"] = list(self.log[-200:])
+        if with_live and self.live is not None:
+            d["live"] = self.live
         return d
 
 

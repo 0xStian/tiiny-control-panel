@@ -2,7 +2,7 @@
    Chats are saved on the panel server, so every browser (and a paired phone) sees the same list. */
 'use strict';
 
-const ChatUI = {currentId: null, streaming: null, preset: null, draft: null, draftImages: null, mounted: null, summaries: null, cache: new Map(), scope: 'all', projects: [], migrated: false};
+const ChatUI = {currentId: null, live: new Map(), preset: null, draft: null, draftImages: null, mounted: null, summaries: null, cache: new Map(), scope: 'all', projects: [], migrated: false};
 const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|xml|html?|log|ini|toml|cfg|conf|py|js|mjs|ts|tsx|jsx|java|kt|c|h|cc|cpp|hpp|cs|go|rs|rb|php|sh|bash|zsh|sql|swift|r|lua|pl|tex|srt|vtt|env|css|scss|vue|svelte)$/i;
 const DOC_EXT = /\.(pdf|docx|docm|pptx|xlsx|xlsm|odt|odp|ods|epub)$/i;
 /* Message -> open or closed, once you've clicked its thinking box; it then stays that way through re-renders. */
@@ -53,7 +53,10 @@ function newChatRecord({project_id = null, model, agent} = {}) {
     knowledge_id: null, pinned_count: 0, unsaved: true, created: Date.now() / 1000, updated: Date.now() / 1000};
 }
 
-/* ---- persistence ---- */
+/* ---- persistence ----
+   The panel writes replies itself (tiinyui/turns.py) and counts every change to a chat's messages (rev). A save from a
+   page with an older copy keeps the panel's messages and takes only the rest (title, model, settings), so a tab that
+   missed a reply can't overwrite it; the answer then carries the panel's messages, and the page shows those. */
 const saveTimers = new Map();
 function saveChat(chat, delay = 500) {
   if (!chat) return;
@@ -68,9 +71,16 @@ function saveChat(chat, delay = 500) {
   clearTimeout(saveTimers.get(chat.id));
   saveTimers.set(chat.id, setTimeout(() => writeChat(chat), delay));
 }
-function writeChat(chat) {
+async function writeChat(chat, {without = null} = {}) {
+  clearTimeout(saveTimers.get(chat.id));
   saveTimers.delete(chat.id);
-  return Store.put('chats', chat).catch(e => toast('Couldn’t save the chat', 'err', {detail: e.message}));
+  const rec = without ? {...chat, messages: chat.messages.filter(m => m !== without)} : chat;
+  try {
+    const out = await Store.put('chats', rec);
+    if (typeof out?.rev === 'number') chat.rev = out.rev;
+    if (out?.messages_kept && !ChatUI.live.has(chat.id)) takeMessages(chat, out.messages);
+    return out;
+  } catch (e) { toast('Couldn’t save the chat', 'err', {detail: e.message}); return null; }
 }
 window.addEventListener('beforeunload', () => {
   for (const [id, t] of saveTimers) {
@@ -79,13 +89,52 @@ window.addEventListener('beforeunload', () => {
     if (chat) fetch(`/api/store/chats/${id}`, {method: 'PUT', keepalive: true, body: JSON.stringify(chat), headers: {'Content-Type': 'application/json', 'X-Tiiny-Token': TOKEN}}).catch(() => {});
   }
 });
+/* The panel's messages win (see above). A reply it's still writing is shown live; one that was cut off says so. */
+function takeMessages(chat, messages) {
+  chat.messages = Array.isArray(messages) ? messages : [];
+  attachTurn(chat).finally(() => { if (ChatUI.mounted?.chatId() === chat.id) ChatUI.mounted.afterFinish(); });
+}
+async function attachTurn(chat) {
+  const last = chat.messages[chat.messages.length - 1];
+  let job = null;
+  if (last?.pending && !ChatUI.live.has(chat.id)) {
+    try { job = (await api(`/api/chats/${encodeURIComponent(chat.id)}/turn`)).job; } catch { job = null; }
+  }
+  for (const m of chat.messages) if (m.pending && !(job && m === last)) { m.pending = false; if (!m.content && !m.error) m.error = 'Interrupted.'; }
+  if (job) followTurn(chat, job.id, last);
+  return !!job;
+}
 async function loadChat(id) {
-  if (ChatUI.cache.has(id)) return ChatUI.cache.get(id);
+  const cached = ChatUI.cache.get(id);
+  if (cached && (cached.unsaved || ChatUI.live.has(id))) return cached;   // not on the panel yet, or a reply this page follows: its copy is the newest
+  if (cached && saveTimers.has(id)) await writeChat(cached);   // your latest change goes out first
   const c = await Store.get('chats', id);
-  for (const m of c.messages || []) if (m.pending) { m.pending = false; if (!m.content && !m.error) m.error = 'Interrupted.'; }
+  if (!Array.isArray(c.messages)) c.messages = [];
   ChatUI.cache.set(id, c);
+  await attachTurn(c);
   return c;
 }
+
+/* Which chats have a reply being written (in any tab, on any device, or by a routine): a dot in the chat list. */
+const ChatRunning = {
+  map: new Map(),   // chat id → {waiting: an approval waits}
+  newest: new Map(),   // chat id → the chat's rev after its latest reply (running or finished in the last minutes)
+  mark(id, on) {
+    if (on) this.map.set(id, this.map.get(id) || {waiting: false}); else this.map.delete(id);
+    ChatUI.mounted?.renderList();
+  },
+  async refresh() {
+    try {
+      const r = await api('/api/turns');
+      this.map = new Map((r.turns || []).map(t => [t.chat, {waiting: !!t.waiting}]));
+      this.newest = new Map();
+      for (const t of [...(r.recent || []), ...(r.turns || [])]) this.newest.set(t.chat, Math.max(this.newest.get(t.chat) || 0, t.rev || 0));
+    } catch { return; }   // the panel is busy or restarting: keep what we had
+    ChatUI.mounted?.renderList();
+  },
+  /* A reply this page didn't follow was written (or is being written) in this chat since it was loaded. */
+  changed(chat) { return !!chat && !ChatUI.live.has(chat.id) && (this.map.has(chat.id) || (this.newest.get(chat.id) || 0) > (chat.rev || 0)); },
+};
 
 function chatModels() {
   const chat = modelsOf('chat');
@@ -103,192 +152,158 @@ function thinkingOptions(chat) {
   return {toggleable: !!t.toggleable, enabled, levels, level, auto};
 }
 
-function buildMessages(chat, upto, system) {
-  const out = [];
-  if (system) out.push({role: 'system', content: system});
-  const history = [];
-  for (const m of chat.messages) {
-    if (m === upto) break;
-    if (m.role === 'user') {
-      const text = [m.docText, m.content].filter(Boolean).join('\n\n') || (m.images?.length ? 'Describe this image.' : '');
-      if (m.images?.length) history.push({role: 'user', content: [{type: 'text', text}, ...m.images.map(url => ({type: 'image_url', image_url: {url}}))]});
-      else history.push({role: 'user', content: text + (m.imagesDropped ? '\n\n[An image was attached here earlier but is no longer available.]' : '')});
-    } else if (m.role === 'assistant' && m.content && !m.error) {
-      history.push({role: 'assistant', content: splitThinking(m).answer});
-    }
-  }
-  return out.concat(history.slice(-40));
-}
-
 function chatMarkdown(c) {
   return [`# ${c.title}`, ''].concat(c.messages.map(m => m.role === 'user'
     ? `**You:** ${m.content || ''}${m.docs?.length ? `\n\n_Attached: ${m.docs.map(d => d.name).join(', ')}_` : ''}`
     : `**${shortName(m.meta?.model || 'Tiiny')}:** ${splitThinking(m).answer || m.error || ''}`)).join('\n\n');
 }
 
-/* Wait for (or start) indexing of a project or a chat's files before answering. */
-async function waitForIndex(id, asst, update) {
-  let p;
-  try { p = await ProjectsAPI.get(id); } catch { return; }
-  let job = p.index_job;
-  const st = p.index_state || {};
-  if (!job && st.needed && st.stale > 0) {
-    try { job = await ProjectsAPI.index(id); } catch (e) { asst.notes.push(`Couldn’t index the files: ${e.message}`); return; }
+/* A step waiting for your OK anywhere (a routine, a reply started on another device) shows as a desktop notification
+   while the panel is in the background, once per step. Replies this page follows say so themselves (followTurn). */
+const TurnAlerts = {seen: new Set()};
+setInterval(async () => {
+  if (!document.hidden) return;   // notifications only show while the panel isn't in front
+  let r;
+  try { r = await api('/api/turns'); } catch { return; }
+  for (const t of r.turns || []) {
+    for (const i of t.waiting_steps || []) {
+      const key = `${t.id}:${i}`;
+      if (TurnAlerts.seen.has(key)) continue;
+      TurnAlerts.seen.add(key);
+      notify('Your Tiiny is waiting for your OK', t.title || 'A reply needs your OK');
+    }
   }
-  if (job && job.status === 'running') {
-    asst.status = 'Indexing files so they can be searched…';
-    update();
-    const fin = await followJob(job.id, j => { asst.status = `Indexing files… ${j.message || ''}`; update(); });
-    if (fin.status === 'failed') asst.notes.push(`Indexing failed: ${fin.error}`);
-  }
+}, 20000);
+
+/* ---- replies: the panel writes them (tiinyui/turns.py); the page shows them as they're written ----
+   ChatUI.live has the replies this page follows: chat id → {jid, msg, n (the last event seen)}. A reply carries on when
+   the page closes or the phone sleeps, and opening the chat again picks it up where it is (attachTurn). */
+const liveUpdate = chatId => { if (ChatUI.mounted && ChatUI.mounted.chatId() === chatId) ChatUI.mounted.updateLive(); };
+function replaceMsg(msg, src) {   // the same object, so its open thinking box and 🔊 button stay
+  const opens = (msg.steps || []).map(st => st?.open);
+  for (const k of Object.keys(msg)) delete msg[k];
+  Object.assign(msg, JSON.parse(JSON.stringify(src || {})));
+  (msg.steps || []).forEach((st, i) => { if (st && opens[i] !== undefined) st.open = opens[i]; });
+}
+function followTurn(chat, jid, msg) {
+  const cur = ChatUI.live.get(chat.id);
+  if (cur?.jid === jid && cur.promise) return cur.promise;
+  const live = {chatId: chat.id, jid, msg, n: 0, es: null, since: Date.now(), asked: new Set(), closed: false};
+  ChatUI.live.set(chat.id, live);
+  ChatRunning.mark(chat.id, true);
+  live.promise = new Promise(resolve => {
+    const finish = status => {
+      if (live.closed) return;
+      live.closed = true;
+      live.es?.close();
+      if (ChatUI.live.get(chat.id) === live) ChatUI.live.delete(chat.id);
+      ChatRunning.mark(chat.id, false);
+      msg.pending = false;
+      msg.status = '';
+      resolve(status);
+    };
+    const take = fn => e => {
+      let d;
+      try { d = JSON.parse(e.data); } catch { return; }
+      if (typeof d.n === 'number') live.n = Math.max(live.n, d.n);
+      try { fn(d); } catch (err) { console.error(err); }
+      liveUpdate(chat.id);
+    };
+    let tries = 0;
+    const retry = async () => {   // the network dropped, the phone slept or the panel restarted
+      if (live.closed) return;
+      tries++;
+      let job;
+      try { job = (await api(`/api/chats/${encodeURIComponent(chat.id)}/turn`)).job; }
+      catch { setTimeout(retry, Math.min(15000, 1500 * tries)); return; }   // the panel isn't answering yet
+      if (job?.id === jid) { connect(); return; }   // still writing: carry on from the last event
+      const rec = await Store.get('chats', chat.id).catch(() => null);   // it ended while we were away
+      const saved = rec?.messages?.[chat.messages.indexOf(msg)];
+      if (saved?.role === 'assistant') replaceMsg(msg, saved);
+      if (msg.pending) { msg.pending = false; if (!msg.content && !msg.error) msg.error = 'Interrupted.'; }
+      if (rec?.rev) chat.rev = rec.rev;
+      liveUpdate(chat.id);
+      finish('gone');
+    };
+    const connect = () => {
+      if (live.closed) return;
+      const es = new EventSource(`/api/turns/${encodeURIComponent(jid)}/stream?since=${live.n}&token=${encodeURIComponent(TOKEN)}`);
+      live.es = es;
+      const announce = (i, st) => {   // a step waiting for your OK: once, also when it was waiting before the page came
+        if (st?.status !== 'approval' || live.asked.has(i) || TurnAlerts.seen.has(`${jid}:${i}`)) return;
+        live.asked.add(i);
+        TurnAlerts.seen.add(`${jid}:${i}`);
+        notify('Your Tiiny is waiting for your OK', `${chat.title}: ${st.label}`);
+        ChatRunning.refresh();
+      };
+      es.addEventListener('snapshot', take(d => {
+        replaceMsg(msg, d.message); live.n = d.n; if (d.rev) chat.rev = d.rev; tries = 0;
+        (msg.steps || []).forEach((st, i) => announce(i, st));
+      }));
+      es.addEventListener('delta', take(d => { msg.content = (msg.content || '') + (d.c || ''); msg.reasoning = (msg.reasoning || '') + (d.r || ''); }));
+      es.addEventListener('set', take(d => { for (const [k, v] of Object.entries(d)) if (k !== 'n') msg[k] = v; }));
+      es.addEventListener('step', take(d => {
+        const steps = msg.steps || (msg.steps = []);
+        const old = steps[d.i];
+        if (old) { const open = old.open; for (const k of Object.keys(old)) delete old[k]; Object.assign(old, d.step); if (open !== undefined) old.open = open; }
+        else steps[d.i] = d.step;
+        announce(d.i, d.step);
+      }));
+      es.addEventListener('done', take(d => { replaceMsg(msg, d.message); if (d.rev) chat.rev = d.rev; }));
+      es.addEventListener('end', take(d => { if (d.rev) chat.rev = d.rev; finish(d.status); }));
+      es.onerror = () => { es.close(); if (!live.closed) setTimeout(retry, 1000); };
+    };
+    connect();
+  });
+  live.promise.then(() => {
+    const ms = msg.meta?.ms || (Date.now() - live.since);
+    const model = msg.meta?.model || chat.model;
+    Activity.add({kind: 'chat', label: `Chat with ${shortName(model)}${chat.agent ? ' (agent)' : ''}`, ok: !msg.error,
+      detail: msg.error || `${(msg.content || '').length} characters in ${(ms / 1000).toFixed(1)} s`, duration: ms / 1000});
+    if (ms > 20000) notify(`${shortName(model)} finished replying`, chat.title);
+    if (ChatUI.mounted && ChatUI.mounted.chatId() === chat.id) ChatUI.mounted.afterFinish();
+  });
+  liveUpdate(chat.id);
+  return live.promise;
 }
 
-async function profileText() {
-  return profileContext();
-}
-
-/* Produce the assistant's reply for the last user message. */
+/* Have the panel write the reply to the last message, and show it as it comes. The page loads the chat's model first,
+   so the “Make room” dialog can ask what to unload: the panel never unloads anything for a reply. */
 async function generateReply(chat, view) {
-  const userMsg = [...chat.messages].reverse().find(m => m.role === 'user');
-  const asst = {role: 'assistant', content: '', reasoning: '', pending: true, status: '', meta: {model: chat.model, sources: []}, notes: [], steps: []};
-  chat.messages.push(asst);
-  const controller = new AbortController();
-  ChatUI.streaming = {chatId: chat.id, controller, msg: asst};
-  const update = () => { if (ChatUI.mounted && ChatUI.mounted.chatId() === chat.id) ChatUI.mounted.updateLive(); };
-  if (view) view.afterStart();
-  const t0 = performance.now();
-  let tFirst = 0;
   const model = chat.model || 'default';
+  const asst = {role: 'assistant', content: '', reasoning: '', pending: true, status: '', meta: {model, sources: []}, notes: [], steps: []};
+  chat.messages.push(asst);
+  const starting = {chatId: chat.id, jid: null, msg: asst, n: 0, cancelled: false};
+  ChatUI.live.set(chat.id, starting);
+  const stopped = () => Object.assign(new Error('Stopped'), {name: 'AbortError'});
+  if (view) view.afterStart();
   try {
     if (model !== 'default' && !S.running.has(model)) {
       asst.status = `Loading ${shortName(model)} into NPU memory…`;
-      update();
+      liveUpdate(chat.id);
       if (!(await loadModel(model, {quiet: true}))) throw new Error(`${shortName(model)} wasn’t loaded. Pick another model, or free NPU memory on the Models page.`);
     }
+    if (starting.cancelled) throw stopped();
     markUsed(model);
-    const sources = asst.meta.sources;
-    const addSource = s => { const src = {...s, n: sources.length + 1}; sources.push(src); return src; };
-    const parts = [];
-    if ((chat.system || '').trim()) parts.push(chat.system.trim());
-    const kids = [chat.project_id, chat.knowledge_id].filter(Boolean);
-    const question = userMsg?.content || userMsg?.docs?.map(d => d.name).join(', ') || '';
-    for (const id of kids) {
-      asst.status = id === chat.project_id ? 'Gathering the project’s context…' : 'Reading this chat’s files…';
-      update();
-      await waitForIndex(id, asst, update);
-      try {
-        const c = await ProjectsAPI.context(id, question, sources.length + 1);
-        if (c.system) parts.push(c.system);
-        for (const s of c.sources) sources.push({...s, project_id: id});
-        if (c.error) asst.notes.push(c.error);
-      } catch (e) { asst.notes.push(`Couldn’t read the files: ${e.message}`); }
+    const saved = await writeChat(chat, {without: asst});   // the chat as it is: the panel adds its own reply
+    if (!saved) throw new Error('The chat couldn’t be saved, so the reply wasn’t started.');
+    if (saved.messages_kept) {   // it changed in another tab or on another device: show that instead
+      ChatUI.live.delete(chat.id);
+      takeMessages(chat, saved.messages);
+      toast('This chat changed in another tab or on another device', 'info', {detail: 'It’s up to date now. Send your message again if it’s still needed.'});
+      return;
     }
-    if (chat.useProfile) {
-      asst.status = 'Reading your profile…';
-      update();
-      const p = await profileText();
-      if (p) parts.push(p);
-    }
-    if (chat.useVault && question) {
-      asst.status = 'Searching your Vault…';
-      update();
-      let hits = await vaultSearch(question, 4);
-      const found = hits.length;
-      if (found && decisionOn('vault_filter')) {   // a decision model leaves out passages that don't fit the question
-        asst.status = decisionLoaded() ? 'Checking the passages…' : 'Getting the decision model ready…';
-        update();
-        const r = await decideFor('vault_filter', `Question: ${question}\n\n` + hits.map((x, i) => `Passage ${i + 1} (${x.source || 'Vault'}):\n${x.text}`).join('\n\n'),
-          Object.fromEntries(hits.map((x, i) => [`p${i + 1}`, {type: 'noul', instructions: `Does passage ${i + 1} contain information that helps answer the question?`}])), {signal: controller.signal});
-        if (r) {
-          hits = hits.filter((x, i) => (r.answers[`p${i + 1}`]?.yes ?? 1) >= 0.3);
-          if (hits.length && hits.length < found) asst.notes.push(`Left out ${found - hits.length} Vault passage${found - hits.length === 1 ? '' : 's'} that didn’t fit the question (${shortName(r.model)}).`);
-        }
-      }
-      if (hits.length) {
-        const lines = hits.map(x => { const s = addSource({name: x.source || 'Vault', kind: 'vault', text: x.text, score: x.score}); return `[${s.n}] ${x.source || 'Vault'}:\n${x.text}`; });
-        parts.push('Relevant passages from the user’s Vault (cite them like [n] when you use them):\n\n' + lines.join('\n\n'));
-      } else asst.notes.push(found ? 'Your Vault had nothing related to this message.' : 'Your Vault had no passages related to this message.');
-    }
-    let toolGroups = null;
-    if (chat.agent && decisionOn('agent_tools')) {
-      asst.status = decisionLoaded() ? 'Choosing tools…' : 'Getting the decision model ready…';
-      update();
-      const pick = await pickAgentTools(chat, asst, {chat, knowledgeIds: kids}, controller.signal);
-      if (pick) { toolGroups = pick.keep; asst.notes.push(pick.note); }
-    }
-    const offered = name => agentToolOn(name) && (!toolGroups || toolGroups.has(toolGroupOf(name)));
-    if (chat.agent) parts.push(['You can use tools. Use them when they help answer accurately, and don’t call tools you don’t need. Only write [n] citations for numbered passages that a search or read returned, never for calculations or other tool results.',
-      offered('web_search') ? 'To find something on the web, call web_search first, then read the most useful results with fetch_web_page.' : '',
-      offered('fetch_web_page') ? `Never guess or make up web addresses: only open addresses from ${offered('web_search') ? 'search results, ' : ''}the user, or pages you read.` : '',
-      offered('search_my_history') ? 'To find something from the user’s earlier chats, meetings or Gallery, use search_my_history, then open_from_history.' : '',
-      'You run on the user’s Tiiny device: never unload the model you are running on, because that ends this chat. generate_image makes room in NPU memory by itself.'].filter(Boolean).join(' '));
-    const pc = S.health?.commands;
-    const pcTools = ['run_command', 'read_file', 'write_file', 'find_files', 'open_on_computer'].filter(offered);
-    if (chat.agent && pc?.enabled && !S.health?.remote && pcTools.length) parts.push([`You can also work on the user’s computer (${pc.os}, ${pc.shell}, user ${pc.user}, home folder ${pc.home}) with ${pcTools.join(', ')}.`,
-      'The user approves every command, file change and file opened, so say in one short sentence what you are about to do and why.',
-      'Never delete, move or overwrite the user’s files unless they asked for exactly that.',
-      pcTools.includes('run_command') ? 'Prefer commands that only look at things. Don’t use sudo: there’s nowhere to type a password, so tell the user to run admin commands themselves. ' +
-        'Commands get no input and must finish by themselves; start long-running programs in the background. Check the output and the exit code before you say something worked.' : ''].filter(Boolean).join(' '));
-    asst.status = '';
-    update();
-    // from/title: the dashboard's Right now card shows this reply as "Chat: <title>" with a link back here
-    const body = {model, messages: buildMessages(chat, asst, parts.join('\n\n')), from: `chat/${chat.id}`, title: chat.title || ''};
-    const opts = thinkingOptions(chat);
-    if (opts?.auto) {   // Auto: a decision model judges how much reasoning this message needs
-      asst.status = decisionLoaded() ? 'Deciding whether to think…' : 'Getting the decision model ready…';
-      update();
-      const r = await decideFor('chat_thinking', recentText(chat, asst, 3),
-        {think: {type: 'score', instructions: 'How much careful, step-by-step reasoning does answering the user’s last message need?', criteria: ['none', 'a little', 'a lot']}},
-        {signal: controller.signal});
-      // the expected level (0 none … 2 a lot) rather than the single likeliest one: a proof is often split between "a little" and "a lot"
-      const v = r?.answers?.think?.value;
-      const need = v == null ? r?.answers?.think?.best : v < 0.5 ? 'none' : v < 1.25 ? 'a little' : 'a lot';
-      if (need) {
-        opts.enabled = need !== 'none';
-        opts.level = opts.levels.length ? (need === 'a lot' ? opts.levels[opts.levels.length - 1] : opts.levels[0]) : null;
-        asst.notes.push(`Thinking: ${opts.enabled ? `on${opts.level ? ` (${opts.level})` : ''}` : 'off'} (Auto, ${shortName(r.model)}).`);
-      }
-      asst.status = '';
-      update();
-    }
-    if (opts) {
-      if (opts.toggleable) body.thinking = opts.enabled;
-      if (opts.enabled && opts.level) { body.depth = opts.level; if (!opts.toggleable) body.thinking = true; }
-    }
-    let res;
-    if (chat.agent) {
-      res = await runAgentTurn({chat, asst, messages: body.messages, body, signal: controller.signal, update,
-        approve: st => new Promise(resolve => { st._resolve = resolve; update(); }), ctx: {chat, knowledgeIds: kids, addSource, toolGroups}});
-    } else {
-      res = await streamChat(body, {signal: controller.signal,
-        onDelta: (c, r) => { if (!tFirst) tFirst = performance.now(); if (c) asst.content += c; if (r) asst.reasoning += r; update(); },
-        onInfo: t => { asst.notes.push(t); update(); }});
-      asst.meta.usage = res.usage;
-    }
-    asst.meta.finish = res.finish;
-    if (res.model) asst.meta.model = res.model;
-    if (!asst.content && !asst.reasoning && !asst.error) asst.error = 'The model returned an empty reply.';
-    if (chat.project_id && asst.content && !asst.error) {
-      ProjectsAPI.memory(chat.project_id, {model, user: userMsg?.content || '', assistant: splitThinking(asst).answer, chat_id: chat.id}).catch(() => {});
-    }
+    if (starting.cancelled) throw stopped();
+    const {job} = await api(`/api/chats/${encodeURIComponent(chat.id)}/turn`, {method: 'POST', body: {}});
+    ChatUI.live.delete(chat.id);
+    await followTurn(chat, job.id, asst);
   } catch (e) {
-    if (e.name === 'AbortError') asst.meta.stopped = true;
-    else asst.error = e.message || String(e);
-  } finally {
-    const t1 = performance.now();
+    if (ChatUI.live.get(chat.id) === starting) ChatUI.live.delete(chat.id);
     asst.pending = false;
     asst.status = '';
-    for (const st of asst.steps) { if (st.status === 'approval' || st.status === 'running') st.status = 'denied'; delete st._resolve; }
-    asst.meta.ms = Math.round(t1 - t0);
-    const toks = asst.meta.usage?.completion_tokens;
-    if (toks && tFirst && t1 > tFirst) asst.meta.tps = toks / ((t1 - tFirst) / 1000);
-    ChatUI.streaming = null;
-    markUsed(model);
+    if (e.name === 'AbortError') asst.meta.stopped = true; else asst.error = e.message || String(e);
     saveChat(chat, 50);
-    Activity.add({kind: 'chat', label: `Chat with ${shortName(asst.meta.model || model)}${chat.agent ? ' (agent)' : ''}`, ok: !asst.error,
-      detail: asst.error || `${asst.content.length} characters in ${(asst.meta.ms / 1000).toFixed(1)} s`, duration: asst.meta.ms / 1000});
     if (ChatUI.mounted && ChatUI.mounted.chatId() === chat.id) ChatUI.mounted.afterFinish();
-    if (asst.meta.ms > 20000) notify(`${shortName(asst.meta.model || model)} finished replying`, chat.title);
   }
 }
 
@@ -458,6 +473,8 @@ function viewChat(root, ctx) {
       listEl.append(h('div', {class: `chat-item ${c.id === current?.id ? 'active' : ''}`, role: 'button', tabindex: '0',
         onclick: () => openChat(c.id), onkeydown: e => { if (e.key === 'Enter') openChat(c.id); }},
         icon('chat'), h('span', {class: 't', title: c.title}, c.title),
+        ChatRunning.map.has(c.id) ? h('span', {class: `chat-dot${ChatRunning.map.get(c.id).waiting ? ' waiting' : ''}`,
+          title: ChatRunning.map.get(c.id).waiting ? 'Waiting for your OK' : 'Writing a reply…'}) : null,
         ChatUI.scope === 'all' && c.project_id ? h('span', {class: 'tag', title: projectName(c.project_id)}, projectName(c.project_id)) : null,
         h('button', {class: 'x', type: 'button', title: 'Delete chat', onclick: e => { e.stopPropagation(); deleteChat(c.id); }}, icon('x'))));
     }
@@ -574,23 +591,28 @@ function viewChat(root, ctx) {
         const what = {network: 'This goes to the internet.', command: 'This runs a command on your computer, with your rights.',
           file: 'This writes a file on your computer.', computer: 'This looks at files on your computer.',
           open: 'This opens something on your computer.'}[st.risk] || 'This changes something.';
+        const pcOnly = !!S.health?.remote && ['command', 'file', 'open', 'computer'].includes(st.risk);   // allowed only on the computer
         const ask = h('div', {class: `approval${st.alwaysAsk ? ' every-time' : ''}`},
-          h('span', {}, what, st.note ? ` ${st.note}` : '', st.alwaysAsk ? ' You’re asked every time.' : '', ' Allow it?'),
+          h('span', {}, what, st.note ? ` ${st.note}` : '', st.alwaysAsk ? ' You’re asked every time.' : '',
+            pcOnly ? ' You can allow it only on the computer running the panel.' : ' Allow it?'),
           h('div', {class: 'row gap-sm'},
-            btn({command: 'Run it', file: 'Write it', open: 'Open it'}[st.risk] || 'Allow', () => decide(st, 'once'), {small: true, kind: 'primary'}),
-            st.alwaysAsk ? null : btn('Always in this chat', () => decide(st, 'always'), {small: true}),
+            pcOnly ? null : btn({command: 'Run it', file: 'Write it', open: 'Open it'}[st.risk] || 'Allow', () => decide(st, 'once'), {small: true, kind: 'primary'}),
+            st.alwaysAsk || pcOnly ? null : btn('Always in this chat', () => decide(st, 'always'), {small: true}),
             btn('Don’t', () => decide(st, 'deny'), {small: true, kind: 'ghost'})));
         if (st.preview?.length) body.append(ask); else body.prepend(ask);   // a command or file: show it first, then ask
       }
       return card;
     }));
   }
-  function decide(st, decision) {
-    const r = st._resolve;
-    delete st._resolve;
+  async function decide(st, decision) {   // the panel waits for the answer (tiinyui/turns.py)
+    const live = current && ChatUI.live.get(current.id);
+    const i = live?.msg.steps?.indexOf(st) ?? -1;
+    if (!live?.jid || i < 0) return;
+    const before = st.status;
     st.status = decision === 'deny' ? 'denied' : 'running';
-    if (r) r(decision);
     updateLive();
+    try { await api(`/api/turns/${encodeURIComponent(live.jid)}/approve`, {method: 'POST', body: {step: i, decision}}); }
+    catch (e) { if (st.status !== 'done') { st.status = before; updateLive(); } toast('Couldn’t answer', 'err', {detail: e.message}); }
   }
 
   function renderMsg(m, isLast) {
@@ -668,10 +690,11 @@ function viewChat(root, ctx) {
     if (raf) return;
     raf = requestAnimationFrame(() => {
       raf = 0;
-      if (ChatUI.mounted !== api_ || !ChatUI.streaming || ChatUI.streaming.chatId !== current?.id) return;
+      const live = current && ChatUI.live.get(current.id);
+      if (ChatUI.mounted !== api_ || !live || current.messages[current.messages.length - 1] !== live.msg) return;
       const nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 140;
       const last = inner.lastElementChild;
-      const node = renderMsg(ChatUI.streaming.msg, true);
+      const node = renderMsg(live.msg, true);
       if (last && last.classList.contains('assistant')) {
         if (!patchLiveMsg(last, node)) { last.replaceWith(node); followThink(node); }
       } else { inner.append(node); followThink(node); }
@@ -680,7 +703,7 @@ function viewChat(root, ctx) {
   }
 
   function renderComposerState() {
-    const streaming = ChatUI.streaming && ChatUI.streaming.chatId === current.id;
+    const streaming = ChatUI.live.has(current.id);
     sendBtn.hidden = !!streaming;
     stopBtn.hidden = !streaming;
     vaultChk.checked = !!current.useVault;
@@ -773,7 +796,7 @@ function viewChat(root, ctx) {
     if (mic.busy()) { mic.finish(); return; }   // still recording: write it down first, then you send it
     const text = textarea.value.trim();
     if (!text && !attachments.length) return;
-    if (ChatUI.streaming) { toast('Wait for the current reply to finish, or stop it first', 'info'); return; }
+    if (ChatUI.live.has(current.id)) { toast('Wait for the current reply to finish, or stop it first', 'info'); return; }
     const docs = attachments.filter(a => a.kind === 'doc');
     const msg = {role: 'user', content: text, images: attachments.filter(a => a.kind === 'image').map(a => a.dataUrl),
       docs: docs.map(d => ({name: d.name})), docText: docs.map(d => `<file name="${d.name}">\n${d.text}\n</file>`).join('\n\n')};
@@ -791,16 +814,14 @@ function viewChat(root, ctx) {
     await generateReply(current, viewApi);
   }
 
-  function stop() {
-    const st = ChatUI.streaming;
-    if (!st) return;
-    for (const step of st.msg.steps || []) if (step._resolve) { const r = step._resolve; delete step._resolve; r('deny'); }
-    st.controller.abort();
-    const m = st.msg.meta?.model;
-    if (m && m !== 'default') dev(`/api/v1/models/${encPath(m)}/interrupt`, {method: 'POST', quiet: true, silent: true});
+  function stop() {   // the panel stops writing and interrupts the model on the device
+    const live = current && ChatUI.live.get(current.id);
+    if (!live) return;
+    if (!live.jid) { live.cancelled = true; return; }   // still loading the model: it won't start
+    api(`/api/turns/${encodeURIComponent(live.jid)}/stop`, {method: 'POST', body: {}}).catch(e => toast('Couldn’t stop the reply', 'err', {detail: e.message}));
   }
   function regenerate() {
-    if (ChatUI.streaming) return;
+    if (ChatUI.live.has(current.id)) return;
     while (current.messages.length && current.messages[current.messages.length - 1].role === 'assistant') current.messages.pop();
     if (!current.messages.length) return;
     renderMessages();
@@ -822,7 +843,8 @@ function viewChat(root, ctx) {
     if (!c) return;
     const hasContent = (c.messages ? c.messages.length : 1) > 0;
     if (hasContent && !(await confirmDialog({title: 'Delete this chat?', message: `“${c.title}” and the files pinned to it will be deleted.`, confirmLabel: 'Delete', danger: true}))) return;
-    if (ChatUI.streaming?.chatId === id) stop();
+    const live = ChatUI.live.get(id);
+    if (live?.jid) api(`/api/turns/${encodeURIComponent(live.jid)}/stop`, {method: 'POST', body: {}}).catch(() => {});
     clearTimeout(saveTimers.get(id));
     saveTimers.delete(id);
     ChatUI.cache.delete(id);
@@ -898,8 +920,18 @@ function viewChat(root, ctx) {
   const viewApi = {
     afterStart() { if (ChatUI.mounted === api_ && current) { renderMessages(); renderComposerState(); } },
   };
-  const api_ = {chatId: () => current?.id, updateLive, afterFinish: () => { renderMessages(); renderComposerState(); renderList(); }};
+  const api_ = {chatId: () => current?.id, updateLive, renderList: () => current && renderList(),
+    afterFinish: () => { renderMessages(); renderComposerState(); renderList(); }};
   ChatUI.mounted = api_;
+  // A reply started somewhere else (another tab, your phone, a routine) in the chat that's open shows up live.
+  const poll = setInterval(async () => {
+    await ChatRunning.refresh();
+    if (!ctx.alive() || !current || current.unsaved || !ChatRunning.changed(current)) return;
+    const c = await loadChat(current.id).catch(() => null);
+    if (c && ctx.alive() && current?.id === c.id) { current = c; renderAll(); }
+  }, 4000);
+  ctx.onCleanup(() => clearInterval(poll));
+  ChatRunning.refresh();
   ctx.onCleanup(() => { if (ChatUI.mounted === api_) ChatUI.mounted = null; void viewToken; });
   ctx.on('models', () => current && renderModelSelect());
   ctx.on('running', () => current && renderModelSelect());

@@ -16,8 +16,8 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import decide, device, jobs, npu
-from .common import BadRequest, DeviceError, estimate_tokens, new_id, now
+from . import activity, decide, device, jobs, npu
+from .common import USAGE, BadRequest, DeviceError, estimate_tokens, new_id, now
 from .files import CODE_EXTS, read_text, scan_folder
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
@@ -40,6 +40,48 @@ def device_up(info) -> bool:
 
 
 WATCH_EVERY = 30  # seconds between "is the device still there?" checks while a request runs
+
+
+LIVE_EVERY = 0.5   # seconds between updates of what the page shows the model writing
+LIVE_TEXT = 3000   # characters of it
+
+
+def _stream_chat(job, info, model, msgs, live=None, *, thinking=None, max_tokens=None, temperature=None, timeout=900):
+    """device.chat, streamed: the same result, while the review's page shows what the model is writing (job.live)."""
+    payload = {"model": model or "default", "messages": msgs, "stream": True}
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    if temperature is not None:
+        payload["temperature"] = float(temperature)
+    extras = {"chat_template_kwargs": {"enable_thinking": bool(thinking)}} if thinking is not None else None
+    content, reasoning, usage, finish, last = [], [], {}, None, 0.0
+    base = dict(live or {})
+
+    def show(final=False):
+        text = "".join(content)
+        if not text.strip() and reasoning:
+            text = "Thinking… " + "".join(reasoning)
+        job.set_live(dict(base, text=text[-LIVE_TEXT:], log=list(job.log[-6:]), done=final))
+
+    USAGE.touch(model)
+    with activity.track("/v1/chat/completions", model):   # the dashboard names it after the review
+        for ev in device.stream_chat(info, payload, extras, timeout=timeout):
+            if ev[0] == "delta":
+                content.append(ev[1] or "")
+                reasoning.append(ev[2] or "")
+                if live is not None and time.time() - last >= LIVE_EVERY:
+                    last = time.time()
+                    show()
+            elif ev[0] == "done":
+                usage, finish = ev[1].get("usage") or {}, ev[1].get("finish_reason")
+    if live is not None:
+        show(final=True)
+    c, r = "".join(content), "".join(reasoning)
+    if "</think>" in c:   # some templates put the reasoning inline
+        head, _, tail = c.partition("</think>")
+        r = r or head.replace("<think>", "").strip()
+        c = tail
+    return {"content": c.strip(), "reasoning": r, "tool_calls": [], "usage": usage, "finish_reason": finish}
 
 
 def _watched(job, info, fn, *args, **kwargs):
@@ -301,7 +343,7 @@ class Reviews:
     def get(self, rid: str) -> dict:
         rec = self._get(rid)
         job = self.jobs.running("review", review=rid)
-        rec["job"] = job.info() if job else None
+        rec["job"] = job.info(with_live=True) if job else None   # with what it's doing now, for the progress card
         if rec.get("status") == "running" and not job:
             rec["status"] = "interrupted"
         return rec
@@ -335,18 +377,41 @@ class Reviews:
             raise BadRequest(str(e))
         if not scan["files"]:
             raise BadRequest("No source files found there (binary, ignored and very large files are skipped).")
+        files = self._file_entries(scan)
+        rec = {"name": spec.get("name") or name, "source": {"kind": kind, "path": str(root), "project_id": spec.get("project_id")},
+               "root": str(root), "files": files, "skipped": scan["skipped"], "truncated": scan["truncated"],
+               "findings": [], "status": "scanned", "options": {}, "stats": {}}
+        return self.store.put("reviews", rec, rid)
+
+    @staticmethod
+    def _file_entries(scan: dict, old: dict = None) -> list:
+        """The review's list of files from a folder scan. Files reviewed before keep whether they were selected."""
         files = []
         for f in scan["files"]:
             ext = Path(f["path"]).suffix.lower()
             is_code = (ext in CODE_EXTS and ext not in (".json", ".xml", ".lock", ".css", ".scss", ".less", ".ipynb", ".diff", ".patch")) \
                 or Path(f["path"]).name.lower() in ("dockerfile", "makefile")
             is_test = bool(re.search(r"(^|/)(tests?|__tests__|spec)/|(_test|\.test|\.spec)\.", f["path"]))
+            before = (old or {}).get(f["path"])
             files.append({"path": f["path"], "size": f["size"], "lang": LANGS.get(ext, ext[1:].upper() or "Text"),
-                          "tokens": max(1, f["size"] // 4), "selected": is_code and not is_test, "status": "pending", "findings": 0})
-        rec = {"name": spec.get("name") or name, "source": {"kind": kind, "path": str(root), "project_id": spec.get("project_id")},
-               "root": str(root), "files": files, "skipped": scan["skipped"], "truncated": scan["truncated"],
-               "findings": [], "status": "scanned", "options": {}, "stats": {}}
-        return self.store.put("reviews", rec, rid)
+                          "tokens": max(1, f["size"] // 4), "selected": before["selected"] if before else is_code and not is_test,
+                          "status": "pending", "findings": 0})
+        return files
+
+    def rescan(self, rid: str) -> dict:
+        """Look at a folder review's folder again (a routine reviews it again): new files are added, gone ones dropped,
+        and files seen before keep whether they were selected."""
+        rec = self._get(rid)
+        if (rec.get("source") or {}).get("kind") == "zip":
+            return rec
+        try:
+            scan = scan_folder(Path(rec["root"]), [], [], max_files=3000, max_bytes=400_000)
+        except (FileNotFoundError, PermissionError) as e:
+            raise BadRequest(str(e))
+        if not scan["files"]:
+            raise BadRequest(f"No source files found in {rec['root']} any more.")
+        files = self._file_entries(scan, {f["path"]: f for f in rec.get("files", [])})
+        return self.store.update("reviews", rid, lambda r: r.update(files=files, skipped=scan["skipped"], truncated=scan["truncated"]))
 
     @staticmethod
     def _unzip(zpath: Path, dest: Path):
@@ -406,7 +471,7 @@ class Reviews:
         return {"path": path, "start": lo, "end": hi, "total": len(lines), "lines": lines[lo - 1:hi]}
 
     # -- running ----------------------------------------------------------------------------
-    def start(self, rid: str, options: dict):
+    def start(self, rid: str, options: dict, title: str = None, meta: dict = None):
         if self.jobs.running("review", review=rid):
             raise BadRequest("This review is already running.")
         rec = self._get(rid)
@@ -426,7 +491,7 @@ class Reviews:
                 for f in r.get("files", []):
                     f.update(status="pending", findings=0, error="")
         self.store.update("reviews", rid, apply)
-        return self.jobs.start("review", f"Reviewing {rec.get('name')}", lambda job: self._run(job, rid), {"review": rid})
+        return self.jobs.start("review", title or f"Reviewing {rec.get('name')}", lambda job: self._run(job, rid), dict(meta or {}, review=rid))
 
     def _overview(self, rec: dict, root: Path) -> str:
         paths = [f["path"] for f in rec.get("files", [])][:200]
@@ -438,14 +503,14 @@ class Reviews:
                 break
         return "Project files:\n" + "\n".join(paths) + (f"\n\nREADME (excerpt):\n{readme}" if readme else "")
 
-    def _chat(self, job, info, model, msgs, **kw):
-        """device.chat that tells a failed request apart from a device that went away.
+    def _chat(self, job, info, model, msgs, live=None, **kw):
+        """A streamed device.chat (_stream_chat) that tells a failed request apart from a device that went away.
 
         If the device still answers, the request itself failed and the error is raised as usual.
         If it doesn't, wait up to OUTAGE_WAIT for it to come back (a network blip), else raise DeviceGone.
         """
         try:
-            return _watched(job, info, device.chat, info, model, msgs, **kw)
+            return _watched(job, info, _stream_chat, job, info, model, msgs, live, **kw)
         except DeviceError as e:
             if device_up(info):
                 raise
@@ -457,7 +522,7 @@ class Reviews:
             time.sleep(5)
             if device_up(info):
                 job.update(log="  The device is back; carrying on.")
-                return _watched(job, info, device.chat, info, model, msgs, **kw)
+                return _watched(job, info, _stream_chat, job, info, model, msgs, live, **kw)
         raise DeviceGone(str(first))
 
     def _run(self, job, rid: str):
@@ -481,8 +546,8 @@ class Reviews:
         opts = rec["options"]
         root = Path(rec["root"])
         model = opts["model"]
-        try:
-            npu.ensure_ready(model, policy="fits", job=job, info=info)
+        try:   # a routine's review may unload models loaded just for a moment, never yours (npu.py: "borrowed")
+            npu.ensure_ready(model, policy="borrowed" if job.meta.get("routine") else "fits", job=job, info=info)
         except DeviceError as e:
             if not device_up(info):
                 raise DeviceGone(str(e)) from None
@@ -497,11 +562,8 @@ class Reviews:
         for n, f in enumerate(todo, 1):
             job.check()
             path = f["path"]
-            elapsed = time.time() - t_start
-            eta = (elapsed / (n - 1)) * (len(todo) - n + 1) if n > 1 else None
             job.update(message=f"Reviewing {path} ({done_before + n} of {total})", progress=(done_before + n - 1) / max(1, total),
                        log=f"Reviewing {path}")
-            job.meta["eta"] = eta
             try:
                 text = read_text(root / path, 2_000_000)
             except OSError as e:
@@ -510,13 +572,24 @@ class Reviews:
             findings = secrets_scan(path, text)
             lines = text.split("\n")
             error = ""
-            for lo, hi in _windows(lines):
+            windows = _windows(lines)
+            for part, (lo, hi) in enumerate(windows, 1):
                 job.check()
+                # progress counts parts, so a big file moves the bar too; the time left follows from it
+                done_frac = (n - 1 + (part - 1) / len(windows)) / len(todo)
+                elapsed = time.time() - t_start
+                job.meta["eta"] = elapsed / done_frac * (1 - done_frac) if done_frac > 0.02 and elapsed > 5 else None
+                where = f"part {part} of {len(windows)} (lines {lo}–{hi})" if len(windows) > 1 else f"lines 1–{len(lines)}"
+                live = {"phase": "reviewing", "file": path, "file_n": done_before + n, "files": total, "part": part,
+                        "parts": len(windows), "lines": f"{lo}–{hi}"}
+                job.set_live(dict(live, text="", log=list(job.log[-6:])))
+                job.update(message=f"Reading {path}, {where}",
+                           progress=(done_before + (n - 1) + (part - 1) / len(windows)) / max(1, total))
                 user = (f"{overview}\n\nFile: {path} ({f.get('lang')})\nLines {lo}–{hi} of {len(lines)}\n\n"
                         f"```\n{_numbered(lines, lo, hi)}\n```")
                 msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
                 try:
-                    out = self._chat(job, info, model, msgs, thinking=opts["thinking"], max_tokens=1600, temperature=0.1, timeout=900)
+                    out = self._chat(job, info, model, msgs, live, thinking=opts["thinking"], max_tokens=1600, temperature=0.1, timeout=900)
                 except DeviceError as e:
                     error = str(e)
                     job.update(log=f"  {path}: {e}")
@@ -528,7 +601,9 @@ class Reviews:
                     msgs += [{"role": "assistant", "content": out["content"][:6000]},
                              {"role": "user", "content": 'That was not valid JSON. Reply again with only the JSON object {"findings": [...]}.'}]
                     try:
-                        out = self._chat(job, info, model, msgs, thinking=False, max_tokens=1600, temperature=0, timeout=600)
+                        job.update(message=f"Asking again for {path}: the answer wasn't readable")
+                        out = self._chat(job, info, model, msgs, dict(live, phase="repair"), thinking=False, max_tokens=1600,
+                                         temperature=0, timeout=600)
                         data = _extract_json(out["content"])
                     except DeviceError:
                         data = None
@@ -550,11 +625,12 @@ class Reviews:
             self._file_done(rid, path, findings, error)
             job.update(log=f"  {path}: {len(findings)} finding(s)")
         job.update(message="Writing the summary…", progress=0.98)
-        self._summarize(info, rid, model)
+        self._summarize(info, rid, model, job)
         stats = {"seconds": round(time.time() - t_start), "tokens_in": tokens_in, "tokens_out": tokens_out}
         self.store.update("reviews", rid, lambda r: r.update(status="done", stats=stats, finished=now()))
         rec = self._get(rid)
         n = len(rec.get("findings", []))
+        job.set_live(None)
         job.update(message=f"Done: {n} finding(s) in {total} file(s)", progress=1)
         return {"findings": n, "files": total}
 
@@ -577,7 +653,8 @@ class Reviews:
         questions = {f"f{i}": {"type": "noul", "instructions": (
             f"A code reviewer says lines {f['line_start']}–{f['line_end']} have this problem: {f['title']}. "
             f"{str(f.get('explanation') or '')[:700]} Is that a real problem in this code?")} for i, f in enumerate(ai)}
-        job.update(message=f"Checking the findings in {path}…")
+        job.update(message=f"Checking {len(ai)} finding{'s' if len(ai) != 1 else ''} in {path} with a decision model…")
+        job.set_live({"phase": "checking", "file": path, "findings": len(ai), "text": "", "log": list(job.log[-6:])})
         try:
             out = decide.decide(self.devconn, None, "review_check", f"File: {path}\n\n```\n{code}\n```", questions, timeout=600)
         except decide.Unavailable as e:
@@ -597,7 +674,7 @@ class Reviews:
             r["findings"] = [x for x in r.get("findings", []) if x["path"] != path] + findings
         self.store.update("reviews", rid, apply)
 
-    def _summarize(self, info, rid, model):
+    def _summarize(self, info, rid, model, job=None):
         rec = self._get(rid)
         findings = [f for f in rec.get("findings", []) if f.get("state") != "false_positive"]
         order = {s: i for i, s in enumerate(SEVERITIES)}
@@ -611,7 +688,11 @@ class Reviews:
                      "\n\nWrite: one sentence on overall risk, then 'Fix first' with the 3-5 most important items (file and why), "
                      "then 'Themes' with recurring patterns. Don't invent findings that aren't listed."}]
             try:
-                md = device.chat(info, model, msgs, thinking=False, max_tokens=700, temperature=0.2, timeout=600)["content"]
+                if job is not None:
+                    md = _stream_chat(job, info, model, msgs, {"phase": "summary"}, thinking=False, max_tokens=700, temperature=0.2,
+                                      timeout=600)["content"]
+                else:
+                    md = device.chat(info, model, msgs, thinking=False, max_tokens=700, temperature=0.2, timeout=600)["content"]
             except DeviceError as e:
                 md = f"(The summary couldn't be written: {e})"
         self.store.update("reviews", rid, lambda r: r.update(summary=md))

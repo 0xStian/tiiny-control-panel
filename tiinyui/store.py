@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .common import BadRequest, atomic_write, new_id, now, valid_id
 
-COLLECTIONS = {"chats", "projects", "gallery", "meetings", "reviews", "studio"}
+COLLECTIONS = {"chats", "projects", "gallery", "meetings", "reviews", "studio", "routines"}
 
 
 class Store:

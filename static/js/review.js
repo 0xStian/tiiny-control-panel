@@ -200,17 +200,39 @@ function viewReviewDetail(root, ctx, rid) {
     } catch (e) { toast('Couldn’t start the review', 'err', {detail: e.message}); }
   }
 
-  let progressEl = null;
+  /* The progress card: how far along, the current step, what the model is writing (job.live, streamed by the panel
+     while it reviews), and what it did so far. Built once and updated in place, so the text box keeps its scroll. */
+  let progressEl = null, prog = null;
   function renderProgress() {
-    progressEl = h('div', {class: 'stack-sm'});
+    progressEl = h('div', {class: 'stack-sm review-progress'});
+    const text = h('pre', {class: 'review-live-text', 'aria-live': 'off'});
+    const box = h('details', {class: 'review-live', open: !window.matchMedia?.('(max-width: 600px)').matches},
+      h('summary', {}, 'What it’s writing'), text);
+    prog = {now: h('span', {class: 'spacer'}), eta: h('span', {class: 'faint'}), bar: h('div'), where: h('span'), elapsed: h('span', {class: 'faint'}),
+      box, text, log: h('ul', {class: 'review-log'}), follow: true};
+    text.addEventListener('scroll', () => { prog.follow = text.scrollTop + text.clientHeight >= text.scrollHeight - 24; });
+    progressEl.append(h('div', {class: 'row small'}, h('span', {class: 'spinner'}), prog.now, prog.eta), prog.bar,
+      h('div', {class: 'row small muted wrap gap-sm'}, prog.where, prog.elapsed), box,
+      h('div', {class: 'stack-sm'}, h('strong', {class: 'small'}, 'So far'), prog.log));
     body.append(card({title: 'Reviewing…', ic: 'activity', actions: [btn('Cancel', async () => { if (rec.job) await api(`/api/jobs/${rec.job.id}/cancel`, {method: 'POST', body: {}}); }, {small: true, kind: 'ghost', icon: 'x'})]}, progressEl));
     paintProgress(rec.job);
   }
   function paintProgress(j) {
-    if (!progressEl || !j) return;
-    const eta = j.meta?.eta;
-    clear(progressEl).append(h('div', {class: 'row small'}, h('span', {class: 'spinner'}), h('span', {class: 'spacer'}, j.message || 'Starting…'), eta ? h('span', {class: 'faint'}, `about ${fmtSecs(eta)} left`) : null),
-      progressBar((j.progress ?? 0) * 100, {indeterminate: j.progress == null}));
+    if (!progressEl || !prog || !j) return;
+    const live = j.live || {}, eta = j.meta?.eta;
+    prog.now.textContent = j.message || 'Starting…';
+    prog.eta.textContent = eta ? `about ${fmtSecs(eta)} left` : '';
+    clear(prog.bar).append(progressBar((j.progress ?? 0) * 100, {indeterminate: j.progress == null}));
+    prog.where.textContent = live.file_n ? `File ${live.file_n} of ${live.files}${live.parts > 1 ? ` · part ${live.part} of ${live.parts}` : ''}`
+      : live.phase === 'checking' ? `Checking the findings in ${live.file}` : live.phase === 'summary' ? 'Writing the summary' : '';
+    prog.elapsed.textContent = j.created ? `${fmtSecs(Math.max(0, Date.now() / 1000 - j.created))} so far` : '';
+    const text = live.text || (live.phase === 'checking' ? 'A decision model is checking each finding…' : live.file ? 'Waiting for the model to start answering…' : '');
+    if (prog.text.textContent !== text) {
+      prog.text.textContent = text;
+      if (prog.follow) prog.text.scrollTop = prog.text.scrollHeight;
+    }
+    const lines = (live.log || []).map(l => l.replace(/^\d\d:\d\d:\d\d\s+/, '').trim()).filter(Boolean);
+    clear(prog.log).append(...(lines.length ? lines : ['Starting…']).slice(-6).map(l => h('li', {}, l)));
   }
   function watch(jid) {
     jobWatch = jid;

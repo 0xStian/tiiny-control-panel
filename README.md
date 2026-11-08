@@ -5,7 +5,7 @@
 # Tiiny Control Panel
 
 **A private, friendly web control panel for your Tiiny AI device.**<br>
-Chat, agents, projects, a music and 3D studio, meeting notes, code review and more, all on your own hardware.
+Chat, agents, routines, projects, a music and 3D studio, meeting notes, code review and more, all on your own hardware.
 
 [![CI](https://github.com/0xStian/tiiny-control-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/0xStian/tiiny-control-panel/actions/workflows/ci.yml)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](docs/USER_GUIDE.md#what-you-need)
@@ -30,15 +30,16 @@ only talks to your Tiiny, and nothing goes to the cloud.
 
 | | |
 |---|---|
-| 💬 **Chat** | Streaming answers with a live thought process, image and document attachments, files pinned to a chat with clickable citations, answers from your Vault. Say your message with 🎤, or have an answer read aloud with 🔊. |
-| 🤖 **Agent mode** | The model can search the web, your files and your past chats and meetings, read web pages, check the device, make and edit images and, if you allow it, work on your computer. You choose which tools it may use, and it asks before anything changes. |
+| 💬 **Chat** | Streaming answers with a live thought process, image and document attachments, files pinned to a chat with clickable citations, answers from your Vault. Replies keep going when you close the tab or lock your phone. Say your message with 🎤, or have an answer read aloud with 🔊. |
+| 🤖 **Agent mode** | The model can search the web, your files and your past chats and meetings, read web pages, check the device, make and edit images and, if you allow it, work on your computer. You choose which tools it may use, and it asks before anything changes; you can answer from your phone. |
+| ⏰ **Routines** | Agent prompts and code reviews that run by themselves on a schedule: a morning briefing on weekdays, a weekly review that says what's new. They never unload your models, and commands always wait for your OK. |
 | 📁 **Projects** | Workspaces with their own instructions, model, files, web pages, a linked folder and a memory of facts and decisions. |
 | 🧠 **Models** | Load, unload, download and benchmark. It measures real NPU memory use, makes room when a model doesn't fit, and unloads idle models. |
 | 🎵 **Studio** | Write songs (with a quick preview), turn pictures into textured 3D models, make videos when a video model is installed. |
 | 🖼️ **Playground and Gallery** | Create and edit images, text to speech, transcription, OCR. Everything the device makes is kept and easy to reuse. |
 | 🎯 **Decision models** | With a decision model like KnowLine or d3 on your Tiiny, the panel gives the agent only the tools a message needs, decides when to think, drops unrelated Vault passages, flags risky commands, double-checks code-review findings, tags Gallery pictures and lists a meeting's action items. |
 | 🎙️ **Meetings** | Live transcripts, plus notes written on your device: overview, decisions, action items and open questions. |
-| 🛡️ **Code review** | A model on your device checks a folder for security problems and bugs, with suggested fixes. Exports as SARIF. |
+| 🛡️ **Code review** | A model on your device checks a folder for security problems and bugs, with suggested fixes. You see which file it's reading and what it's writing as it goes. Exports as SARIF. |
 | 📚 **Vault** | Upload documents and web pages, then search them by meaning. |
 | 🔌 **Integrations** | Give each app its own key. Apps that speak the OpenAI, Anthropic or Ollama API, and AI assistants like Claude Code and Cursor (MCP), use your Tiiny through the panel; models load when an app needs them and are unloaded again afterwards. Filled-in setups for Claude Code, Cursor, OpenClaw, Hermes Agent, Open WebUI, Continue, Zed and more. |
 | 📈 **Dashboard** | What the device is working on right now and for whom, live NPU, memory and CPU use, history charts, and how fast each model answers. |
@@ -112,7 +113,7 @@ More, with every button explained: [the user guide](docs/USER_GUIDE.md).
 - **Apps get their own keys.** Other apps on your computer use your Tiiny through the panel's gateway (`127.0.0.1:8766`), each with a key you can limit and revoke. No key can manage the device, and web pages can't use the gateway.
 - **Your API key stays put.** It comes from the `tiiny` tool's own config and isn't copied anywhere.
 - **Phones need pairing.** Phone access is off until you pair a phone with a QR code. Paired phones can't reach your computer's files, settings or terminals, and you can remove one any time.
-- **The agent asks first.** Agent actions that change something or go to the internet need your approval. Running commands on your computer is off unless you start the panel with `--allow-commands`, and then every command still asks.
+- **The agent asks first.** Agent actions that change something or go to the internet need your approval. Running commands on your computer is off unless you start the panel with `--allow-commands`, and then every command still asks, and only the computer can allow it. Routines only use the tools you allow them.
 
 Read more in [Your data and privacy](docs/USER_GUIDE.md#your-data-and-privacy). To report a security problem, see [SECURITY.md](SECURITY.md).
 
@@ -144,7 +145,8 @@ already running. This happens in a new browser, after clearing browsing data, or
 <summary><b>A model won't load</b></summary>
 
 The NPU's memory is probably full. The panel offers to unload other models to make room. **Models → NPU memory**
-shows how much each one takes. Big chat models and image models often don't fit together.
+shows how much each one takes. Big chat models and image models often don't fit together. Your Tiiny also keeps the
+shares it lists for the loaded models at 100% at most, so a model can "not fit" while some memory is still free.
 </details>
 
 <details>

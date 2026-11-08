@@ -1723,7 +1723,7 @@ const NOW_KINDS = {  // kind of work → [icon, what it is]
   speech: ['speaker', 'Reading text aloud'], music: ['music', 'Making music'], '3d': ['cube', 'Making a 3D model'],
   video: ['film', 'Making a video'], load: ['box', 'Loading a model'], download: ['download', 'Downloading a model'],
 };
-const NOW_JOB_ICONS = {review: 'shield', 'meeting-summary': 'users', 'meeting-highlights': 'users', 'project-index': 'folder',
+const NOW_JOB_ICONS = {'chat-turn': 'chat', review: 'shield', 'meeting-summary': 'users', 'meeting-highlights': 'users', 'project-index': 'folder',
   'project-memory': 'folder', music: 'music', model3d: 'cube', video: 'film', 'gallery-tags': 'grid', firmware: 'download'};
 const fmtElapsed = s => { s = Math.max(0, Math.round(Number(s) || 0));
   return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}` : `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min`; };
@@ -1744,6 +1744,7 @@ const cap = text => text ? text[0].toUpperCase() + text.slice(1) : text;
 function nowHref(t) {
   if (!t.jobkind) return t.href || null;
   const m = t.meta || {};
+  if (t.jobkind === 'chat-turn' && m.chat) return `chat/${m.chat}`;
   if (t.jobkind === 'review' && m.review) return `review/${m.review}`;
   if (/^meeting/.test(t.jobkind) && m.meeting) return `meetings/${m.meeting}`;
   if (/^project/.test(t.jobkind) && m.project) return `projects/${m.project}`;
@@ -4305,7 +4306,7 @@ async function init() {
   setupNavDrawer();
   bus.addEventListener('running', updatePill);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeMenu(); if (Activity.open && !$('#modal-root').children.length) toggleActivity(false); } });
-  window.addEventListener('beforeunload', e => { if ([...Terms.values()].some(t => t.running) || (typeof ChatUI !== 'undefined' && ChatUI.streaming) || VaultUploader.busy) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', e => { if ([...Terms.values()].some(t => t.running) || VaultUploader.busy) { e.preventDefault(); e.returnValue = ''; } });
 
   if (TOKEN.includes('{{')) {
     $('#view').append(errorBlock('Start the panel with python3 tiiny_ui.py and use the page it opens, not this file.', {title: 'Opened as a file'}));

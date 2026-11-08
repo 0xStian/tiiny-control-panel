@@ -35,7 +35,9 @@ Only the latest release gets security fixes.
   minutes. Paired devices still need the session token. Only fingerprints of their logins are stored, and you can
   remove a device at any time. Phones can't change panel settings, browse or read the computer's folders, run the
   `tiiny` tool or a terminal, reveal the API key, update the panel, back up or restore its data, or make the panel
-  fetch addresses on your local network. Without
+  fetch addresses on your local network. They can't allow the agent's steps that run commands, change files or open
+  things on the computer (they can decline them), replies they start never get those tools, and they can't set up
+  routines that review a folder or may read or change the computer's files. Without
   `--tls-cert`, phones use plain HTTP, so only use it on a network you trust.
 - **The agent asks first.** Agent actions that change something or go to the internet need your approval. Text from
   web pages and search results is marked as untrusted for the model. Web searches send only the search words to the
@@ -44,7 +46,10 @@ Only the latest release gets security fixes.
   was started with `--allow-commands` (the page can't switch it on). Even then, every command and every file change
   needs your approval, shown in full, with no way to allow them for a whole chat. Commands run as you, with no
   terminal or input (so sudo can't work), a time limit, and Stop. Opening a file never runs programs or scripts.
-  Phones never get these tools.
+  Phones never get these tools, and approving them only works on the computer.
+- **Routines can only do what you allowed.** A routine runs the agent with nobody watching: tools that only look run,
+  the tools you ticked for it run, any other tool is refused for that run, and commands and file changes still wait
+  for your approval in the routine's chat. Routines never unload your models.
 - **You choose the agent's tools.** Each tool can be switched off under System → Agent tools. A switched-off tool is
   never offered to the model, and the panel's endpoints that exist only for the agent (history, commands, files) refuse
   it too. The switches can only take tools away, never add the computer tools without `--allow-commands`.

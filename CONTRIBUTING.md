@@ -41,14 +41,16 @@ Edit a file in `static/` and reload the page. Edit a Python file and restart the
 | `tiinyui/decide.py` | Decision models (`/v1/systemone`): checks questions, picks and loads the model only when it fits, normalises answers. Every caller falls back when it's `Unavailable`. |
 | `tiinyui/firmware.py` | TiinyOS updates through the device's upgrade service (the v2 API its own dashboard uses). |
 | `tiinyui/activity.py` | What the device is doing right now (the dashboard's Right now card). It keeps a note of the panel's own model requests while they run (`track`; `device.call` and the chat and proxy routes do this) and pairs them with the device's task list, where every unnamed program shows as "API". |
-| `tiinyui/npu.py` | The NPU planner: whether a model fits (from the card's real numbers), what may be unloaded to make room, and loading, one at a time under one lock. Everything on the panel's side that loads models uses it (`ensure_ready`, `use`). |
+| `tiinyui/npu.py` | The NPU planner: whether a model fits (by the card's real numbers and by the device's own count of listed shares, at most 100%), what may be unloaded to make room, and loading, one at a time under one lock. Everything on the panel's side that loads models uses it (`ensure_ready`, `use`). |
 | `tiinyui/gateway.py` | The gateway other apps use (`127.0.0.1:8766`): per-app keys (`apps.json`, hashed), scopes, model names, on-demand loading and forwarding, with streams kept as streams. |
 | `tiinyui/mcp.py`, `tools.py` | MCP for AI assistants: the protocol (the stateless 2026-07-28 style and the older `initialize` handshake), the stdio bridge, and the tools. |
+| `tiinyui/turns.py`, `agenttools.py` | Chat replies written by the panel (a `chat-turn` job per reply): the context, streaming, the agent loop with its approvals, saving with the chat's `rev`, and the stream pages follow (`/api/turns/{id}/stream`). The agent's tools live in `agenttools.py`; `static/js/agent.js` only lists them for System → Agent tools. |
+| `tiinyui/routines.py` | Routines: schedules, the runner thread, agent prompts (unattended turns) and folder reviews that say what's new. |
 | `tiinyui/selfupdate.py`, `backup.py` | Updating the panel itself from GitHub releases (git pull or the release ZIP, then a restart), and the ZIP backup of the panel's own data. |
 | `tiinyui/websearch.py`, `commands.py`, `history.py` | Agent web search (DuckDuckGo, Brave Search, SearXNG); commands and files on this computer (`--allow-commands` only); searching saved chats, meetings and the Gallery. |
 | `static/index.html`, `static/app.css` | The page and all of its styles (desktop, then phones at the end). |
 | `static/app.js` | The core: helpers like `h()`, `dev()`, `api()`, the UI kit (`card`, `btn`, `modal`…), most pages. |
-| `static/js/*.js` | One file per area: chat, agent, projects, review, gallery, studio, meetings, perf, devices, integrations… They're plain scripts that share one scope, loaded in the order listed in `index.html`; `boot.js` starts the app last. (`signin.js` is the exception: only the sign-in page loads it.) |
+| `static/js/*.js` | One file per area: chat, agent, projects, review, gallery, studio, meetings, perf, devices, integrations, routines… They're plain scripts that share one scope, loaded in the order listed in `index.html`; `boot.js` starts the app last. (`signin.js` is the exception: only the sign-in page loads it.) |
 | `static/vendor/` | Third-party libraries, unchanged (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). |
 
 ## Ground rules

@@ -24,8 +24,6 @@ from .common import DeviceError, error_message
 MAX_QUESTIONS = 64       # the device refuses more ("at most 64 are supported")
 MAX_LEVELS = 10          # score: 2..10 levels (the device takes up to 255; more isn't useful here)
 MAX_STATE = 400_000      # characters of text state (KnowLine reads 256k tokens, d3 16k)
-CARD_MB = 49024          # the Tiiny's NPU card when it doesn't say
-MARGIN_MB = 1536         # NPU memory left free when the panel loads a decision model by itself
 FEATURES = {             # key → what it does (System → Decision models has a switch for each)
     "agent_tools": "The agent gets only the tools a message needs",
     "chat_thinking": "Automatic thinking in chat",
@@ -162,15 +160,6 @@ def short(mid: str) -> str:
     return str(mid or "").split("/")[-1]
 
 
-def footprint_mb(settings, m: dict) -> float:
-    """NPU memory a model takes: what the panel measured when it loaded, else its share from the store."""
-    measured = (settings.get("npu_footprints") or {}).get(m.get("id"))
-    if isinstance(measured, (int, float)) and measured > 0:
-        return float(measured)
-    pct = _num(m.get("npu_usage"))
-    return CARD_MB * pct / 100 if pct else 8192.0
-
-
 def choose(info, settings) -> tuple:
     """(the decision model to use, all models on the device, the loaded ids)."""
     models = device.list_models(info)
@@ -186,18 +175,6 @@ def choose(info, settings) -> tuple:
     return picked, models, running
 
 
-def free_mb(info, settings, models: list, running: set) -> float:
-    """Free NPU memory: the card's own numbers (it reports while a model is loaded), else an estimate from the models."""
-    if not running:
-        return float(CARD_MB)
-    status, nj, _ = device.call(info, "core", "GET", "/api/v1/npu/status", timeout=8)
-    d0 = ((nj or {}).get("devices") or [None])[0] if isinstance(nj, dict) else None
-    if isinstance(d0, dict) and _num(d0.get("mem_total_mb")):
-        return _num(d0["mem_total_mb"]) - (_num(d0.get("mem_used_mb")) or 0)
-    by_id = {m["id"]: m for m in models}
-    return CARD_MB - sum(footprint_mb(settings, by_id.get(r, {"id": r})) for r in running)
-
-
 def ensure(info, settings, allow_load: bool = True) -> str:
     """The id of a loaded decision model, loading the chosen one first if it fits next to what's loaded. It never
     unloads anything to make room: if it doesn't fit, the feature just isn't used (Unavailable)."""
@@ -210,10 +187,9 @@ def ensure(info, settings, allow_load: bool = True) -> str:
         running = set(device.running_ids(info))
         if m["id"] in running:
             return m["id"]
-        need, free = footprint_mb(settings, m), free_mb(info, settings, models, running)
-        if need + MARGIN_MB > free:
-            raise Unavailable(f"{short(m['id'])} doesn't fit in NPU memory next to the loaded models "
-                              f"({need / 1024:.1f} GB needed, {max(0, free) / 1024:.1f} GB free).")
+        p = npu.plan(m["id"], info=info)   # both the memory in use and the device's own count (see npu.py)
+        if not p["fits"]:
+            raise Unavailable(npu.describe(p))
         try:
             npu.ensure_ready(m["id"], policy="fits", info=info)
         except DeviceError as e:

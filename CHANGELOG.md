@@ -5,6 +5,46 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-08
+
+### Added
+
+- **Replies keep going when you close the tab.** The panel on your computer now writes chat and agent replies, not
+  the browser tab:
+  - **Close the tab, reload, or lock your phone,** and the reply carries on. Open the chat again and it's there, or
+    still coming in.
+  - **Across devices:** a reply started on your computer shows up live on your phone, and the other way round. A dot
+    in the chat list marks a chat with a reply being written.
+  - **Approvals wait for you,** from the computer or a paired phone, and a desktop notification says so while the panel
+    is open in the background. Commands, file changes and opening things on the computer can only be allowed on the
+    computer.
+- **Routines,** on a new page: the panel does things by itself on a schedule.
+  - **Agent prompts,** like a morning briefing on weekdays at 08:00, each run in the routine's own chat. Only the tools
+    you tick run by themselves; any other is refused for that run, and commands and file changes wait for your OK.
+  - **Code reviews of a folder,** for example every Friday, saying what's new since the last run.
+  - **When:** every day, on weekdays, on the days you pick, or every few hours, in local time. **Run now** any time.
+  - **Careful with your Tiiny:** they never unload your models, and what they load is unloaded again 10 minutes after
+    its last use. When your Tiiny is off or locked, a run waits and tries again every 10 minutes. A run missed while
+    the panel was off runs once when it starts, if it's less than 12 hours late.
+- **See what a code review is doing.** Its progress card shows:
+  - which file and part it's reading, and about how long is left;
+  - what the model is writing, as it writes;
+  - what it found so far.
+
+  The bar moves part by part, so a big file moves it too.
+
+### Changed
+
+- **The agent's tools run in the panel** now, with the same tools, approvals and decision-model help as before.
+- **The Dashboard names replies and routines:** *Chat: Trip plans*, *Routine: Morning briefing*, with **Open**.
+
+### Fixed
+
+- **Your Tiiny could unload one of your models by itself.** It keeps the shares it lists for the loaded models at 100%
+  at most, even when memory is still free, and the 1.2.0 planner only counted the memory in use. So, for example, a
+  code review's check of its findings could unload your chat model. The panel now counts both ways and loads only
+  what fits by both, and **Make room** offers to unload enough.
+
 ## [1.2.0] - 2026-11-08
 
 ### Added
