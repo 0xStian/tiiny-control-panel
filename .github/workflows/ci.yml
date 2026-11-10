@@ -113,8 +113,9 @@ jobs:
           curl -sfk https://127.0.0.1:8765/__tiiny__ | grep -q tiiny-ui
           curl -s "http://$(hostname -I | awk '{print $1}'):8765/" | grep -q 'Use the secure address'
           # the panel runs as the data folder's user, not root, and its files are theirs
-          docker top tiiny-panel -eo uid,args | grep tiiny_ui.py
-          test "$(docker top tiiny-panel -eo uid,args | grep 'tiiny_ui.py --server' | awk '{print $1}')" = "$(id -u)"
+          # (docker top needs the pid column to tell the container's processes apart)
+          docker top tiiny-panel -eo pid,uid,args | grep tiiny_ui.py
+          test "$(docker top tiiny-panel -eo pid,uid,args | grep 'tiiny_ui.py --server' | awk '{print $2}')" = "$(id -u)"
           test "$(stat -c %u data/config/tiiny-ui/browser-key)" = "$(id -u)"
           # Docker's health check passes
           for i in $(seq 1 45); do test "$(docker inspect -f '{{.State.Health.Status}}' tiiny-panel)" = healthy && break; sleep 2; done
