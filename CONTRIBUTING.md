@@ -27,6 +27,14 @@ python3 tiiny_ui.py --verbose
 
 Edit a file in `static/` and reload the page. Edit a Python file and restart the panel (Ctrl+C, then start it again).
 
+To try **server mode** (an always-on machine; every device signs in), start it with `python3 tiiny_ui.py --server`
+open the address it prints, and type the setup code it shows. `python3 tiiny_ui.py pair --limited` makes a link for a device with limited
+access. To build and run the **Docker image** from your copy:
+
+```bash
+./docker/setup.sh   # builds the image from this copy, starts it, and shows the address and setup code
+```
+
 ## How the code is organised
 
 | Path | What's there |
@@ -36,8 +44,10 @@ Edit a file in `static/` and reload the page. Edit a Python file and restart the
 | `tiinyui/clitools.py`, `tiinyui/pty.py` | Running the `tiiny` command-line tool, including in a real terminal. |
 | `tiinyui/store.py`, `tiinyui/jobs.py` | Saved data (JSON files in `~/.local/share/tiiny-ui/`) and background jobs. |
 | `tiinyui/projects.py`, `rag.py`, `textextract.py`, `webfetch.py` | Projects, their search index, reading documents and web pages. |
-| `tiinyui/review.py`, `studio.py`, `meetings.py`, `metrics.py`, `pairing.py` | Code review, studio jobs, meeting notes, performance history and unloading models (idle ones, and the ones 🎤 and 🔊 borrowed: `Borrowed` in `common.py`), phone pairing. |
-| `tiinyui/browserauth.py` | Signing this computer's browser in (one-time links, the stored credential). Read it before touching security checks. |
+| `tiinyui/review.py`, `studio.py`, `meetings.py`, `metrics.py`, `pairing.py` | Code review, studio jobs, meeting notes, performance history and unloading models (idle ones, and the ones 🎤 and 🔊 borrowed: `Borrowed` in `common.py`), phone pairing and server mode's signed-in devices with their access (`role`). |
+| `tiinyui/tlscert.py` | The panel's own HTTPS certificate (RSA-2048, made with the standard library) for server mode and the phone listener, when no certificate is given. `Server.process_request_thread` in `tiiny_ui.py` serves HTTPS and plain HTTP on one port. |
+| `tiinyui/browserauth.py` | Signing this computer's browser in (one-time links, the stored credential), and signing server mode's device links. Read it before touching security checks. |
+| `Dockerfile`, `docker/entrypoint.sh`, `compose.yaml` | The Docker image: server mode with all data in `/data`, running as `PUID`/`PGID`. The entrypoint installs Tiiny's tool on the first start, and handles `pair`, `mcp` and Docker's health check. |
 | `tiinyui/decide.py` | Decision models (`/v1/systemone`): checks questions, picks and loads the model only when it fits, normalises answers. Every caller falls back when it's `Unavailable`. |
 | `tiinyui/firmware.py` | TiinyOS updates through the device's upgrade service (the v2 API its own dashboard uses). |
 | `tiinyui/activity.py` | What the device is doing right now (the dashboard's Right now card). It keeps a note of the panel's own model requests while they run (`track`; `device.call` and the chat and proxy routes do this) and pairs them with the device's task list, where every unnamed program shows as "API". |
@@ -64,6 +74,10 @@ Edit a file in `static/` and reload the page. Edit a Python file and restart the
 - **Plain language.** The panel is used by people who aren't developers. Write buttons and messages the way you'd
   explain it to a friend, say what happened and what to do next, and avoid jargon.
 - **Works on phones.** Check new screens at about 390 px wide (the phone styles are at the end of `app.css`).
+- **Works in server mode.** Check new features with `--server` too, especially anything that touches the machine:
+  files, commands, the terminal, finding the device, phones. A device with limited access counts as remote
+  (`is_remote()` on the server, `S.health.remote` on the page), so route it through the same checks as phones. Say
+  "the server" instead of "this computer" there: `onServer()` and `hereName()` in `app.js` help.
 
 ## Before you open a pull request
 
@@ -73,6 +87,8 @@ Run the same checks as the automatic CI:
 python3 -m compileall -q tiiny_ui.py tiinyui
 for f in static/*.js static/js/*.js; do node --check "$f"; done
 python3 tiiny_ui.py --no-browser &   # then open http://127.0.0.1:8765 and try your change
+python3 tiiny_ui.py --server --port 8775 --gateway-port 8776 --no-browser &   # and in server mode
+docker build -t tiiny-panel:test .   # if you changed the Docker files
 ```
 
 If you can, try your change with a real Tiiny, and say in the pull request what you tested and how.
@@ -88,7 +104,9 @@ Releases are what the panel's **Check for updates** (System → Tiiny Control Pa
 3. Commit, then tag and push: `git tag v1.2.0 && git push && git push --tags`.
 
 The **Release** workflow checks that the tag, `VERSION` and the changelog agree, and publishes the GitHub release
-with that version's changelog section as its notes.
+with that version's changelog section as its notes. Then it builds the Docker image for x86-64 and 64-bit ARM and
+publishes it at `ghcr.io/0xstian/tiiny-control-panel` as the version (`1.4.0`), the minor version (`1.4`) and
+`latest`. The first time, set the package to public on GitHub (the package's settings), or nobody else can pull it.
 
 An update only replaces the panel's own files: `tiiny_ui.py`, `tiinyui/`, `static/`, `docs/`, `.github/` and the
 documents at the top level. If a release needs a new top-level folder, add it to `MANAGED_DIRS` in

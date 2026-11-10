@@ -44,6 +44,104 @@ jobs:
           kill %1
           cat panel.log
           ! grep -q Traceback panel.log
+      - name: Server mode (an always-on machine; every device signs in)
+        run: |
+          python tiiny_ui.py --server --port 8775 --gateway-port 8776 > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8775/__tiiny__ && break; sleep 1; done
+          # a device that hasn't signed in gets nothing, and other websites' names are refused
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8775/api/health)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example:8775' http://127.0.0.1:8775/api/health)" = 403
+          # a new browser gets the setup page; the setup code (only on the server) gives it full access
+          curl -s http://127.0.0.1:8775/ | grep -q 'Set up your Tiiny Control Panel'
+          code=$(python tiiny_ui.py code --port 8775 | grep -o '[A-Z2-9]\{4\}-[A-Z2-9]\{4\}' | head -1)
+          test -n "$code" && grep -q "$code" ~/.config/tiiny-ui/setup-code.txt
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: http://evil.example' --data-urlencode "code=$code" http://127.0.0.1:8775/setup)" = 403
+          curl -sf -c jar -o /dev/null -H 'Origin: http://127.0.0.1:8775' --data-urlencode "code=$code" http://127.0.0.1:8775/setup
+          test ! -e ~/.config/tiiny-ui/setup-code.txt
+          token=$(curl -sf -b jar http://127.0.0.1:8775/ | grep -o 'name="tiiny-token" content="[^"]*"' | sed 's/.*content="//; s/"$//')
+          test -n "$token"
+          curl -sf -b jar -H "X-Tiiny-Token: $token" http://127.0.0.1:8775/api/health | grep -q '"role": "owner"'
+          # HTTPS by default, with the panel's own certificate; plain HTTP from another address gets the switch page
+          curl -sfk https://127.0.0.1:8775/__tiiny__ | grep -q tiiny-ui
+          ip=$(hostname -I | awk '{print $1}')
+          curl -s "http://$ip:8775/" | grep -q 'Use the secure address'
+          grep -q 'https     : with the panel' server.log
+          # the pair command makes a limited link that works
+          link2=$(python tiiny_ui.py pair --limited --port 8775 | grep -o 'http[^ ]*/pair?code=[^ ]*')
+          curl -sf -c jar2 -o /dev/null "http://127.0.0.1:8775/pair?${link2#*\?}"
+          token2=$(curl -sf -b jar2 http://127.0.0.1:8775/ | grep -o 'name="tiiny-token" content="[^"]*"' | sed 's/.*content="//; s/"$//')
+          test "$(curl -s -o /dev/null -w '%{http_code}' -b jar2 -H "X-Tiiny-Token: $token2" -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8775/api/settings)" = 403
+          kill %1
+          cat server.log
+          ! grep -q Traceback server.log
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build it
+        run: docker build -t tiiny-panel:test .
+      - name: Run it as compose.yaml does, and sign in
+        run: |
+          mkdir -p data
+          docker run -d --name tiiny-panel --network host --init -e PUID="$(id -u)" -e PGID="$(id -g)" -v "$PWD/data:/data" tiiny-panel:test
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:8765/__tiiny__ && break; sleep 2; done
+          docker logs tiiny-panel
+          # the first start installed Tiiny's own tool into the data folder, with Tiiny's installer
+          test -x data/.local/tiiny/bin/tiiny
+          docker exec -u "$(id -u):$(id -g)" tiiny-panel tiiny cli version
+          # a device that hasn't signed in gets the setup page and no API; the machine's own name works too
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/health)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $(hostname).local:8765" http://127.0.0.1:8765/api/health)" = 401
+          curl -s http://127.0.0.1:8765/ | grep -q 'tiiny-data'
+          # the setup code is at the top of the data folder (only for its user), and docker exec shows it
+          test "$(stat -c '%u %a' data/setup-code.txt)" = "$(id -u) 600"
+          code=$(docker exec tiiny-panel tiiny-panel code | grep -o '[A-Z2-9]\{4\}-[A-Z2-9]\{4\}' | head -1)
+          test -n "$code" && grep -q "$code" data/setup-code.txt
+          curl -sf -c jar -o /dev/null -H 'Origin: http://127.0.0.1:8765' --data-urlencode "code=$code" http://127.0.0.1:8765/setup
+          test ! -e data/setup-code.txt
+          token=$(curl -sf -b jar http://127.0.0.1:8765/ | grep -o 'name="tiiny-token" content="[^"]*"' | sed 's/.*content="//; s/"$//')
+          curl -sf -b jar -H "X-Tiiny-Token: $token" http://127.0.0.1:8765/api/health | grep -q '"container": true'
+          # the update card shows the Docker commands, not an Update button
+          curl -sf -b jar -H "X-Tiiny-Token: $token" http://127.0.0.1:8765/api/update | grep -q '"how": "container"'
+          # docker exec makes a limited link
+          docker exec tiiny-panel tiiny-panel pair --limited | grep -q '/pair?code='
+          # HTTPS by default: the panel's own certificate, its key only for the data folder's user; plain HTTP from
+          # another address gets the switch page
+          test "$(stat -c '%u %a' data/config/tiiny-ui/tls/panel-key.pem)" = "$(id -u) 600"
+          curl -sfk https://127.0.0.1:8765/__tiiny__ | grep -q tiiny-ui
+          curl -s "http://$(hostname -I | awk '{print $1}'):8765/" | grep -q 'Use the secure address'
+          # the panel runs as the data folder's user, not root, and its files are theirs
+          docker top tiiny-panel -eo uid,args | grep tiiny_ui.py
+          test "$(docker top tiiny-panel -eo uid,args | grep 'tiiny_ui.py --server' | awk '{print $1}')" = "$(id -u)"
+          test "$(stat -c %u data/config/tiiny-ui/browser-key)" = "$(id -u)"
+          # Docker's health check passes
+          for i in $(seq 1 45); do test "$(docker inspect -f '{{.State.Health.Status}}' tiiny-panel)" = healthy && break; sleep 2; done
+          test "$(docker inspect -f '{{.State.Health.Status}}' tiiny-panel)" = healthy
+          docker logs tiiny-panel 2>&1 | (! grep -q Traceback)
+
+  docker-setup:
+    name: Docker setup script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: One command from this copy of the code, then again
+        run: |
+          mkdir -p "$RUNNER_TEMP/try" && cd "$RUNNER_TEMP/try"
+          "$GITHUB_WORKSPACE/docker/setup.sh" | tee first.txt
+          # it ends with the address and the setup code
+          grep -q "is running" first.txt
+          grep -Eq "Open +https://" first.txt
+          grep -Eq "Setup code +[A-Z2-9]{4}-[A-Z2-9]{4}" first.txt
+          # .env has this user and group (detected, not edited by hand)
+          grep -qx "PUID=$(id -u)" tiiny-panel/.env
+          grep -qx "PGID=$(id -g)" tiiny-panel/.env
+          curl -sfk https://127.0.0.1:8765/__tiiny__ | grep -q tiiny-ui
+          # running it again shows the same block, with the same code
+          "$GITHUB_WORKSPACE/docker/setup.sh" | tee second.txt
+          grep -q "$(grep -Eo '[A-Z2-9]{4}-[A-Z2-9]{4}' first.txt | head -1)" second.txt
+          docker exec tiiny-panel tiiny-panel info | grep -q "is running"
 
   javascript:
     name: JavaScript syntax

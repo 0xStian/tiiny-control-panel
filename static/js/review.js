@@ -21,7 +21,7 @@ function viewReview(root, ctx) {
   let mode = 'folder';
   const body = h('div', {class: 'stack'});
   if (S.health?.remote) mode = 'zip';   // phones: only an uploaded ZIP (folders are on the computer)
-  const seg = segmented(S.health?.remote ? [['zip', 'A ZIP file']] : [['folder', 'A folder on this computer'], ['zip', 'A ZIP file'], ['project', 'A project’s folder']], mode, v => { mode = v; renderSource(); });
+  const seg = segmented(S.health?.remote ? [['zip', 'A ZIP file']] : [['folder', `A folder on ${hereName()}`], ['zip', 'A ZIP file'], ['project', 'A project’s folder']], mode, v => { mode = v; renderSource(); });
   const pastEl = h('div', {}, loadingBlock());
   root.append(
     h('div', {class: 'banner info'}, icon('shield'), h('div', {class: 'text'}, h('strong', {}, 'Private code review'),

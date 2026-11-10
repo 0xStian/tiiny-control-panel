@@ -17,6 +17,7 @@ For the short version, see the [README](../README.md).
 - [Decision models](#decision-models)
 - [Use it from your phone](#use-it-from-your-phone)
 - [Install it as an app, or start it automatically](#install-it-as-an-app-or-start-it-automatically)
+- [Run it on a home server (server mode and Docker)](#run-it-on-a-home-server-server-mode-and-docker)
 - [Your data and privacy](#your-data-and-privacy)
 - [Good to know about the device](#good-to-know-about-the-device)
 - [Troubleshooting](#troubleshooting)
@@ -157,7 +158,8 @@ panel restarts, so bookmarks keep working. If a page ever says *This browser isn
 | `--cli-config FILE` | Use another config file for the `tiiny` tool (default `~/.local/tiiny/config.json`). |
 | `--allow-commands` | Let agent mode run commands and read and write files on this computer. It asks before every command and file change (see [Agent mode](#agent-mode)). |
 | `--verbose` | Log every request in the terminal. |
-| `--tls-cert cert.pem --tls-key key.pem` | Serve the phone listener over HTTPS with your own certificate (see [phones](#use-it-from-your-phone)). |
+| `--tls-cert cert.pem --tls-key key.pem` | Use your own certificate for the phone listener's HTTPS, instead of the one the panel makes itself (see [phones](#use-it-from-your-phone)). |
+| `--no-tls` | Phones (and server mode) use plain HTTP instead of HTTPS. Phones then can't use the microphone. Also `TIINY_UI_TLS=off`. |
 | `--host` | Listen on another address. Don't: anyone who can reach it could control your device. Use the phone pairing instead. |
 
 ---
@@ -635,6 +637,11 @@ with its own key. Cloud services can't reach your Tiiny.
 At the bottom, **Talk to the device directly (advanced)** shows the device's own address and key, for apps on other
 computers. That key can also manage the device, so use an app key when you can.
 
+**Taking turns:** your Tiiny answers one request at a time per model, in the order they came, and different models run
+side by side (see [Good to know about the device](#good-to-know-about-the-device)). Apps and agents don't need a lock
+file to share it: a request to a busy model just waits its turn. For quick answers, give agents their own small model
+instead of sharing a big one.
+
 **What an app may use:** chat (OpenAI chat, completions and responses, Anthropic messages, Ollama chat and generate),
 embeddings and reranking, pictures, speech (recognition and text to speech), OCR, decisions, your Vault (searching,
 and separately saving), and tools for AI assistants (MCP). An app can never load, unload or delete models directly,
@@ -717,7 +724,8 @@ running.
      Whatever a restore replaces is set aside first, in a `.before-restore-…` folder in `~/.local/share/tiiny-ui/`.
      Tick *Also restore the panel's settings* when you move to a new computer.
 6. **App and notifications.** Install the panel as an app, get a notification when long tasks finish, add it to your desktop's app menu, or stop the panel.
-7. **Phone and other devices.** See [the next section](#use-it-from-your-phone).
+7. **Phone and other devices.** See [the next section](#use-it-from-your-phone). In [server mode](#run-it-on-a-home-server-server-mode-and-docker)
+   this card is called **Devices**, and lists every signed-in device.
 
 Also here:
 
@@ -800,9 +808,12 @@ The panel can also listen on your computer's local-network address, but only for
 
 Do those on the computer.
 
-> [!WARNING]
-> Without `--tls-cert`, phones connect over plain HTTP. Use it only on a network you trust, like your home Wi-Fi.
-> On shared or public Wi-Fi, someone watching the traffic could take over a paired phone's connection.
+> [!NOTE]
+> **The phone's browser warns once that the connection isn't private.** That's expected: phones connect over HTTPS
+> with a certificate the panel made itself, and no public authority vouches for home addresses. Choose **Advanced**
+> (or **Show details**), then **Continue** (or **Visit this website**). After that the connection is encrypted and the
+> microphone works (🎤 and meetings). Start the panel with `--tls-cert` and `--tls-key` to use your own certificate
+> instead.
 
 ![The panel on a phone](images/phone.png)
 
@@ -816,7 +827,7 @@ Do those on the computer.
   - **Fedora, openSUSE** (firewalld): `sudo firewall-cmd --add-port=8765/tcp`. Add `--permanent` to keep the rule after a restart.
   - **Ubuntu, Debian, Mint** (ufw, if it's switched on): `sudo ufw allow 8765/tcp`.
   - **Arch**: there's no firewall unless you set one up. Manjaro may use ufw (see above).
-- **Recording meetings from a phone** needs HTTPS, because browsers only allow the microphone on secure pages. Start the panel with `--tls-cert` and `--tls-key` pointing at your own certificate. On the computer itself, `127.0.0.1` already counts as secure.
+- **An old `http://` link** (from before 1.4.0) shows a page with a button to the `https://` address; the pairing carries on there.
 
 ---
 
@@ -850,6 +861,212 @@ Do those on the computer.
 
 ---
 
+## Run it on a home server (server mode and Docker)
+
+The panel can also run all the time on an always-on machine at home, like a home server, a NAS or a Raspberry Pi, and
+you open it from your laptop and your phone. Routines then run around the clock, even while your laptop is off.
+
+There are two ways, and both run the same panel in **server mode**:
+
+- **With Docker:** one `compose.yaml` file, and updates with one command. The easiest way on a NAS.
+- **Without Docker:** start the panel with `--server` on that machine.
+
+What's different from running it on your own computer:
+
+- **Every device signs in once,** with a one-time link or QR code, and gets **full** or **limited** access (see
+  [Devices](#devices-full-and-limited-access)).
+- **The agent's computer tools work on the server.** Commands, files and the terminal are the server's (with Docker:
+  the container's, and the folders you give it). *Open on computer* isn't offered, since a server has no screen.
+- **No app-menu entry and no Stop button.** It runs as a service, so you restart it on the server.
+
+### With Docker
+
+You need a Linux machine (x86-64 or 64-bit ARM) with Docker and Docker Compose, on the same network as your Tiiny or
+connected to it by USB-C. Docker Desktop on macOS and Windows can't be used: the panel needs the machine's own network
+to find your Tiiny.
+
+1. **Run the setup command:**
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/0xStian/tiiny-control-panel/main/docker/setup.sh | bash
+   ```
+
+   - **Where it goes:** it makes a `tiiny-panel` folder in the current folder, with `compose.yaml` and a `.env` file
+     holding your user, group and time zone, all detected for you. If your user can't use Docker, it uses `sudo` and
+     asks for your password.
+   - **What it does next:** it downloads the image and starts the panel. The first start takes about a minute,
+     because it installs Tiiny's own command-line tool into `./tiiny-data`, with Tiiny's installer.
+   - **What it ends with:** the panel's address and a **setup code**, plus the one firewall command you might need if
+     your server runs a firewall.
+
+   From a copy of the code (a git clone or a release ZIP), run `./docker/setup.sh` in it instead. It builds the image
+   from that copy.
+2. **Open the address** on your laptop.
+   - **The warning:** your browser warns once that the connection isn't private. That's expected: the panel made its
+     own certificate for your home network. Choose **Advanced** (or **Show details**), then **Continue**.
+   - **The setup code:** the page asks for it. Type it, and that browser gets full access. The code works until the
+     first device has signed in.
+3. **Set up your Tiiny in the panel.** The dashboard says **Set up your device**:
+   1. Press **Find my Tiiny**.
+   2. Press **Use** next to its address, or type the address and press **Connect**.
+   3. Press **Log in** when it asks, and type the device's password in the terminal that opens.
+4. **Add your phone:** **System → Devices → Add a device** (with *Limited* selected), and scan the QR code.
+
+**See the address again** by running the setup command again (in the folder above `tiiny-panel`, or in it). It also
+starts the panel if it was stopped. Or run `docker exec tiiny-panel tiiny-panel info` on the server. For a sign-in link
+for another device from the server, run `docker exec tiiny-panel tiiny-panel pair` (add `--limited` for limited
+access).
+
+**By hand, without the script:**
+1. Put [`compose.yaml`](../compose.yaml) in a folder.
+2. Set `PUID`, `PGID` and `TZ` in a `.env` file next to it, like `PUID=1000`. Run `id` to see your user and group.
+3. Run `docker compose up -d`, then `docker exec tiiny-panel tiiny-panel info`.
+
+The image is `ghcr.io/0xstian/tiiny-control-panel`, for x86-64 and 64-bit ARM. Each release is published as its
+version (`1.4.0`), its minor version (`1.4`, which gets that version's fixes) and `latest`.
+
+### Without Docker
+
+Set the panel up on the server as in [Set up, step by step](#set-up-step-by-step) (steps 1 to 4), then start it with:
+
+```bash
+python3 tiiny_ui.py --server
+```
+
+It listens on all of the server's addresses, on port 8765, and prints the address and a **setup code** for your
+first device. Open the address in a browser and type the code. It's also in `~/.config/tiiny-ui/setup-code.txt`, and
+`python3 tiiny_ui.py code` shows it. Make links for more devices on the server with `python3 tiiny_ui.py pair` (or
+`pair --limited`), or from a signed-in browser.
+
+To keep it running when you log out, use the [systemd service](#install-it-as-an-app-or-start-it-automatically) with
+`--server` added to the `ExecStart` line, then run `sudo loginctl enable-linger $USER` once. It then also starts when
+the server boots, without anyone logging in.
+
+The settings for server mode:
+
+| Option | Or set | What it does |
+|---|---|---|
+| `--server` | `TIINY_UI_SERVER=1` | Server mode. |
+| `--port 8765` | `TIINY_UI_PORT` | The port. |
+| `--public-name box.example` | `TIINY_UI_PUBLIC_NAMES` | Other names your devices use for the server, separated by commas. IP addresses and the server's own name always work. |
+| `--public-url https://nas.local` | `TIINY_UI_PUBLIC_URL` | The address used in sign-in links and QR codes. |
+| `--tls-cert`, `--tls-key` | `TIINY_UI_TLS_CERT`, `TIINY_UI_TLS_KEY` | Your own certificate, instead of the one the panel makes itself. |
+| `--no-tls` | `TIINY_UI_TLS=off` | Plain HTTP instead of HTTPS (other devices then can't use the microphone). |
+| `--host 127.0.0.1` | | Answer only on the server itself, for example behind a reverse proxy. |
+| `--allow-commands` | | Lets the agent run commands and change files on the server, each one after your OK. |
+
+With Docker, the `--` options go on the `command:` line of `compose.yaml`, and the others under `environment:`.
+
+### Devices: full and limited access
+
+| | Full access | Limited |
+|---|:---:|:---:|
+| Chat, agent, Vault, models, pictures, meetings, routines | ✓ | ✓ |
+| Settings, app keys, backups, updates, adding and removing devices | ✓ | |
+| The terminal, the server's folders, code reviews of a folder | ✓ | |
+| Allowing the agent's commands and file changes | ✓ | can say no |
+
+Give full access to your own computers. *Limited* is what a paired phone gets on a normal install (see
+[what a phone can't do](#use-it-from-your-phone)), for phones and for other people at home.
+
+- **Add a device:** **System → Devices**. Choose *Limited* or *Full access*, press **Add a device**, then scan the QR
+  code with that device, or open the link on it. The link works once, for 10 minutes.
+- **Remove a device:** press **Remove** next to it. It's signed out at once.
+- **On the server:** `python3 tiiny_ui.py pair` prints a full-access link, and `pair --limited` a limited one (with
+  Docker: `docker exec tiiny-panel tiiny-panel pair`).
+- **The first device** uses the setup code, while no device has full access: the panel's page asks for it. It's only
+  on the server (`setup-code.txt`, or the `code` command), so nobody else on your network can claim the panel. The
+  log also shows a one-time link. If you remove the last device with full access, a new setup code is made.
+
+### Names, addresses and HTTPS
+
+- **IP addresses and the server's own name always work,** like `http://nas.local:8765`. To use another name, like a
+  Tailscale name, list it in `TIINY_UI_PUBLIC_NAMES`. Other names are refused: that stops websites from reaching the
+  panel through a name they control (DNS rebinding).
+- **Sign-in links and QR codes** use the server's network address. If your devices should use a name or a proxy's
+  address instead, set `TIINY_UI_PUBLIC_URL`.
+- **HTTPS by default.** The panel makes its own certificate (in `tls/` in its config folder, so in `./tiiny-data` with
+  Docker), and serves HTTPS and plain HTTP on the same port:
+  - **Another device opening `http://`** gets a page with a button to the `https://` address, which explains the
+    browser's one-time warning first. The page also shows the certificate's fingerprint, if you'd like to compare it.
+  - **The server itself** may still use plain HTTP: the Docker health check, a browser at `http://localhost:8765`, or a
+    reverse proxy on the same machine.
+  - **The certificate stays the same,** unless the server's address or name changes, so browsers don't warn again.
+
+  Every device's browser warns once, because no public authority vouches for home addresses. To avoid the warning,
+  and to install the panel as an app, use a certificate your devices trust:
+  - **Tailscale:** run `tailscale serve --bg 8765` on the server. Your devices in your tailnet then open
+    `https://<server>.<tailnet>.ts.net`. Put that name in `TIINY_UI_PUBLIC_NAMES` and that address in
+    `TIINY_UI_PUBLIC_URL`.
+  - **A reverse proxy** like Caddy, which gets certificates by itself. A `Caddyfile` for it:
+
+    ```
+    nas.example.com {
+        reverse_proxy 127.0.0.1:8765
+    }
+    ```
+
+    Then list `nas.example.com` as above.
+  - **Your own certificate:** `TIINY_UI_TLS_CERT` and `TIINY_UI_TLS_KEY`. With Docker, put the files in
+    `./tiiny-data/tls/` and use the paths `/data/tls/…`.
+
+  Behind a proxy, `--host 127.0.0.1` makes the panel answer only the proxy. To switch HTTPS off and use plain HTTP
+  everywhere, set `TIINY_UI_TLS=off`; other devices then can't use the microphone.
+
+### Updating
+
+- **With Docker:** in the folder you set it up in, run the setup command with `--update`:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/0xStian/tiiny-control-panel/main/docker/setup.sh | bash -s -- --update
+  ```
+
+  Or run `docker compose pull && docker compose up -d` in the folder with `compose.yaml`. From a copy of the code,
+  update the code, then run `./docker/setup.sh` again. Your data in `./tiiny-data` stays as it is.
+  - The panel still tells you when a new version is out (**System → Tiiny Control Panel → Check for updates**, or the
+    daily check), with what's new. It doesn't update itself inside a container.
+  - A tool like Watchtower can update it automatically.
+  - To stay on one version line, use a tag like `ghcr.io/0xstian/tiiny-control-panel:1.4` instead of `latest`.
+- **Without Docker:** the **Update** button works as usual.
+
+### Folders, commands and USB-C with Docker
+
+- **The container only sees its own files and the folders you give it.** For code reviews and projects, add a line
+  under `volumes:` in `compose.yaml`, like `- /home/alex/code:/projects:ro`, then pick `/projects/…` in the panel.
+  `:ro` (read-only) is enough for reviews. On Fedora and other systems with SELinux, write `:ro,z`.
+- **Commands:** with `command: ["--allow-commands"]`, the agent may run commands and change files inside the container,
+  each after your OK on a device with full access. Outside the container, it can only reach folders you gave it
+  without `:ro`.
+- **USB-C:** plug your Tiiny into the server. The container uses the server's network, so it reaches it.
+- **Apps on other computers:** the gateway answers on the server itself (port 8766). To let apps on your laptop use
+  it, switch on **Apps on other computers in your network** under **Integrations**.
+- **Backups:** **System → Download a backup**, or copy `./tiiny-data` while the container is stopped.
+
+### If something doesn't work on a server
+
+- **The log says "Couldn't listen on 0.0.0.0:8765".** Something else uses that port, like the panel itself started
+  the normal way on the same machine. Stop that one, or set `TIINY_UI_PORT` to another port, then run
+  `docker compose up -d` again.
+- **The panel doesn't find your Tiiny.** Keep `network_mode: host` in `compose.yaml`: the panel looks for your Tiiny on
+  the network, and that needs the server's own network. It works on Linux; Docker Desktop on macOS and Windows isn't
+  supported. You can always type the device's address on **Network**.
+- **The QR code or link has the wrong address.** Set `TIINY_UI_PUBLIC_URL` to the address your devices use.
+- **Where's the setup code?** In `./tiiny-data/setup-code.txt`, or run `docker exec tiiny-panel tiiny-panel code`.
+  Once a device has full access, it's gone; make links with `pair` instead.
+- **The setup command says the panel already runs from another folder.** Only one panel container can run. Run the
+  command in that folder, or stop it there with `docker compose down`.
+- **"This device isn't signed in".** Make a link with `pair` (see above), or with **Add a device** on a signed-in one.
+- **"Forbidden host" when you use a name.** Add the name to `TIINY_UI_PUBLIC_NAMES`, and restart the panel.
+- **Settings don't save, or the log says "Permission denied".** `./tiiny-data` must be writable for `PUID` and `PGID`.
+  On a network share that doesn't allow changing owners, set them to the folder's owner. On Fedora and other systems
+  with SELinux, keep the `:z` at the end of the `./tiiny-data:/data:z` line.
+- **Other devices can't connect.** The server's firewall may block port 8765; see the firewall commands under
+  [Use it from your phone](#use-it-from-your-phone). Another program on port 8765? Set `TIINY_UI_PORT`.
+- **🎤 or meetings don't work on other devices.** Open the panel's `https://` address. It's the default, unless HTTPS
+  is switched off (`TIINY_UI_TLS=off`).
+
+---
+
 ## Your data and privacy
 
 | Where | What |
@@ -857,10 +1074,12 @@ Do those on the computer.
 | `~/.local/share/tiiny-ui/` | Your chats, projects (with their search indexes), routines, code reviews, meetings, the Gallery's files, and 7 days of performance history. After a restore, also `.before-restore-…` folders with what the restore replaced. |
 | `.previous/` in the panel's folder | The version from before the last update (only after updating from System → Tiiny Control Panel without git). |
 | `~/.config/tiiny-ui/settings.json` | Panel settings, including measured model sizes. Readable only by you. |
-| `~/.config/tiiny-ui/devices.json` | Paired phones. Only fingerprints of their logins are stored, so the file can't be used to log in. |
+| `~/.config/tiiny-ui/devices.json` | Paired phones (in server mode, every signed-in device and its access). Only fingerprints of their logins are stored, so the file can't be used to log in. |
 | `~/.config/tiiny-ui/apps.json` | The apps that may use the gateway, with what they may use. Only fingerprints of their keys are stored. |
+| `~/.config/tiiny-ui/tls/` | The panel's own HTTPS certificate and its key (for phones and server mode). The key is readable only by you. Delete the folder to make a new one. |
 | `~/.config/tiiny-ui/browser-key` | The secret the panel signs your browser in with. Readable only by you. Delete it and restart the panel to sign every browser out. |
 | `~/.local/tiiny/config.json` | The command-line tool's device address and API key. The panel only reads it. |
+| `./tiiny-data/` (Docker) | All of the above in one folder: `config/tiiny-ui/`, `share/tiiny-ui/`, and Tiiny's tool with its config in `.local/tiiny/`. |
 
 - **Everything stays local.** Data only goes:
   - to your Tiiny;
@@ -868,6 +1087,8 @@ Do those on the computer.
   - to the search engine when the agent searches the web (only the search words, and it asks first);
   - to GitHub when you check for a new version of the panel (only that question).
 - **Only your browser.** The panel listens on `127.0.0.1` and only works in a browser it has [signed in](#5-start-the-panel), so other programs and user accounts on this computer can't use it.
+  In [server mode](#run-it-on-a-home-server-server-mode-and-docker), only devices that signed in can use it, each with
+  full or limited access.
 - **Protected from other websites.** Websites open in your browser can't read the panel or send it commands.
 - **It only runs what you started it to run.** The `tiiny` tool it uses, and whether the agent may run commands
   (`--allow-commands`, which then asks before each one), can only be set when starting it, never from the page.
@@ -880,6 +1101,14 @@ Do those on the computer.
 
 - **After every restart or power cut, the Tiiny locks its data** until you log in. Until then, its models, Vault and connectors don't run. The panel shows *Your Tiiny is locked* with a **Log in** button.
 - **NPU memory is shared.** Your device has about 48 GB. A big chat model takes about half of it, and image models take about half too. The panel measures what each model really uses and warns you before things don't fit.
+- **One request at a time per model.** These were measured on TiinyOS 0.1.39:
+  - **The same model:** two requests are answered one after the other, in the order they came. A chat reply that has
+    to wait says who's first, like "“Code review: my-app” is using Qwen3-8B first".
+  - **Different models** work at the same time, but they share the NPU, so each one is slower. Two chat models writing
+    at once each took about twice as long.
+  - **Small requests,** like a Vault search's embedding, answer right away even while a chat is writing.
+  - **Apps that use your Tiiny don't need a lock** to take turns: it keeps the order itself.
+- **Downloading a model didn't interrupt a reply** that was being written, in a test on TiinyOS 0.1.39.
 - **Long, heavy jobs** (a big model reviewing lots of code, long renders) keep the NPU at full power for a long time. Use the power adapter that came with the device, keep its vents clear, and avoid starting large downloads at the same time. The device doesn't report its temperature, so the panel can't warn you about heat.
 
 ---
@@ -904,8 +1133,13 @@ minutes. Try again later, or choose Brave Search or your own SearXNG under **Sys
 [Agent mode](#agent-mode)).
 
 **🎤 says the microphone needs a secure connection.** Browsers only allow the microphone on secure pages. On this
-computer, use the panel at `http://127.0.0.1:8765`. On a phone, start the panel with `--tls-cert` and `--tls-key` (see
-[phones](#use-it-from-your-phone)).
+computer, use the panel at `http://127.0.0.1:8765`. On a phone or another device, open the panel's `https://` address;
+it's what phones and server mode use, unless you switched HTTPS off (`--no-tls` or `TIINY_UI_TLS=off`).
+
+**The browser says the connection isn't private.** That's expected the first time on each device: the panel made its
+own certificate for your home network. Choose **Advanced** (or **Show details**), then **Continue**. It comes back
+only if the server's address or name changes. To avoid it, use your own certificate, or Tailscale (see
+[Names, addresses and HTTPS](#names-addresses-and-https)).
 
 **🎤 or 🔊 says there's no model for it.** Speaking needs a speech recognition model (for example Whisper), and reading
 aloud needs a text-to-speech model (for example Qwen3-TTS VoiceDesign). **Find one** opens the model store at them.

@@ -308,7 +308,7 @@ function viewMeetings(root, ctx) {
   const startBody = h('div');
   const fileBody = h('div');
   root.append(h('div', {class: 'grid cols-2'},
-    card({title: 'Start a meeting', ic: 'mic', sub: 'Live transcript from this computer’s microphone'}, startBody),
+    card({title: 'Start a meeting', ic: 'mic', sub: `Live transcript from ${onServer() ? 'this device' : 'this computer'}’s microphone`}, startBody),
     card({title: 'Transcribe a recording', ic: 'upload', sub: 'An audio or video file of a meeting, call or lecture'}, fileBody)),
   card({title: 'Past meetings', ic: 'users'}, listEl));
   function renderStart() {

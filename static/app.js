@@ -4,6 +4,10 @@
 /* The session token. Paired phones get it in the page; on this computer the page fetches it (see getSessionToken). */
 let TOKEN = document.querySelector('meta[name="tiiny-token"]')?.content || '';
 const TOKEN_IN_PAGE = TOKEN !== '';
+/* Server mode (tiiny_ui.py --server): the panel runs on another machine, a home server or the Docker image, so
+   "this computer" is the server there. */
+const onServer = () => !!S.health?.server;
+const hereName = () => (onServer() ? 'the server' : 'this computer');
 const DOCS_URL = 'https://dev.tiiny.ai/';
 
 /* =========================================================================
@@ -1220,8 +1224,11 @@ async function deleteModel(id) {
       h('p', {class: 'muted small'}, 'You can download it again from the model store later.'))});
   if (!ok) return false;
   if (S.running.has(id)) await unloadModel(id);
-  const r = await dev(`/api/v1/models/${encPath(id)}`, {method: 'DELETE', label: `Delete ${shortName(id)}`, timeout: 120});
+  // silent: the device's own reason is the message (like "Embedding models are protected and cannot be deleted."),
+  // not a generic "… failed" with the reason in small print; the Activity log still has the request
+  const r = await dev(`/api/v1/models/${encPath(id)}`, {method: 'DELETE', label: `Delete ${shortName(id)}`, timeout: 120, silent: true});
   if (r.ok) toast(`${shortName(id)} deleted`, 'ok');
+  else toast(r.error || `Couldn’t delete ${shortName(id)}`, 'err', {detail: `${shortName(id)} is still on your Tiiny.`, timeout: 15000});
   await refreshModels();
   return r.ok;
 }
@@ -3777,9 +3784,12 @@ function panelUpdateCard(ctx) {
       body.append(h('div', {class: 'stack-sm'},
         h('strong', {}, `Version ${st.latest} is available`),
         rel.notes ? h('details', {class: 'raw', open: true}, h('summary', {}, 'What’s new'), h('div', {class: 'md', html: renderMarkdown(rel.notes)})) : null,
-        st.how === 'manual' ? h('div', {class: 'banner warn'}, icon('info'), h('div', {class: 'text'}, h('strong', {}, 'Update it yourself'), h('span', {class: 'small'}, st.how_note)))
+        st.how === 'container' ? h('div', {class: 'banner info'}, icon('info'), h('div', {class: 'text'}, h('strong', {}, 'Update the container'),
+          h('span', {class: 'small'}, 'This panel runs in Docker, which updates it by pulling the new image. On the server, in the folder with compose.yaml:'),
+          h('code', {class: 'block'}, st.how_note), h('span', {class: 'small muted'}, 'Your data stays in its folder. A tool like Watchtower can do this for you.')))
+          : st.how === 'manual' ? h('div', {class: 'banner warn'}, icon('info'), h('div', {class: 'text'}, h('strong', {}, 'Update it yourself'), h('span', {class: 'small'}, st.how_note)))
           : h('p', {class: 'small muted'}, `${how} Your chats, projects and settings aren’t touched.`),
-        h('div', {class: 'row wrap'}, st.how !== 'manual' ? btn(`Update to ${st.latest}`, install, {kind: 'primary', icon: 'download'}) : null,
+        h('div', {class: 'row wrap'}, !['manual', 'container'].includes(st.how) ? btn(`Update to ${st.latest}`, install, {kind: 'primary', icon: 'download'}) : null,
           rel.url ? h('a', {class: 'btn ghost', href: rel.url, target: '_blank', rel: 'noopener noreferrer'}, icon('link'), h('span', {}, 'On GitHub')) : null)));
     } else if (st.checked_at && !st.error && !ready) {
       body.append(h('div', {class: 'row wrap', style: {alignItems: 'center'}}, st.no_releases ? badge('No releases published yet', '', 'info') : badge('Up to date', 'ok', 'check')));
@@ -4003,7 +4013,8 @@ function viewSystem(root, ctx) {
     decisionsCard(ctx),
     card({title: 'About', ic: 'info'}, h('div', {class: 'stack-sm'},
       h('p', {}, `Tiiny Control Panel ${S.health?.version || ''} · Python ${S.health?.python || ''}`),
-      h('p', {class: 'muted small'}, 'Runs only on this computer. Device requests go straight from here to your Tiiny; the API key never leaves this machine.'),
+      h('p', {class: 'muted small'}, onServer() ? 'Runs on the server, and your devices sign in to it (System → Devices). Device requests go straight from the server to your Tiiny; the API key never leaves the server.'
+        : 'Runs only on this computer. Device requests go straight from here to your Tiiny; the API key never leaves this machine.'),
       h('p', {}, h('a', {href: DOCS_URL, target: '_blank', rel: 'noopener noreferrer'}, 'Tiiny developer docs ↗')))));
 
   function renderSettings() {
@@ -4164,11 +4175,12 @@ function agentToolsCard() {
           h('ol', {class: 'step-links'}, r.results.map(x => h('li', {}, safeUrl(x.url) ? h('a', {href: safeUrl(x.url), target: '_blank', rel: 'noopener noreferrer'}, x.title) : x.title))))));
       } catch (e) { clear(out).append(errorBlock(e.message, {title: 'Saved, but the test search failed'})); }
     };
-    const commandsInfo = remote ? [h('p', {class: 'muted small'}, 'Only on the computer running the panel, never from a phone.')]
-      : pc.enabled ? [h('p', {class: 'small'}, `Agent mode can run commands as ${pc.user} (${pc.shell}) and find, open, read and write files on this computer. `,
+    const fileVerbs = onServer() ? 'find, read and write' : 'find, open, read and write';
+    const commandsInfo = remote ? [h('p', {class: 'muted small'}, onServer() ? 'Only on a device with full access.' : 'Only on the computer running the panel, never from a phone.')]
+      : pc.enabled ? [h('p', {class: 'small'}, `Agent mode can run commands as ${pc.user} (${pc.shell}) and ${fileVerbs} files on ${hereName()}${S.health?.container ? ' (inside its container: only the folders you mounted)' : ''}. `,
           'It asks before every command, every file change and everything it opens, even in chats set to never ask.'),
         h('p', {class: 'muted small'}, 'To turn it off, start the panel without --allow-commands. To keep only some of these, use the pills above.')]
-      : [h('p', {class: 'muted small'}, 'Agent mode can also run commands and find, open, read and write files on this computer. To allow that, start the panel with:'),
+      : [h('p', {class: 'muted small'}, `Agent mode can also run commands and ${fileVerbs} files on ${hereName()}. To allow that, start the panel with:`),
         h('code', {class: 'block'}, 'python3 tiiny_ui.py --allow-commands'),
         h('p', {class: 'muted small'}, 'It then asks before every command, file change and file it opens. To keep it on when you start from the app menu, add the panel to the app menu again after starting it this way.')];
     // One pill per tool (tools that only work together share one). Off means the model is never offered it.
@@ -4177,10 +4189,11 @@ function agentToolsCard() {
     const toggles = AgentTools.filter(t => { const k = toolKey(t); if (seen.has(k)) return false; seen.add(k); return true; });
     const rows = TOOL_GROUPS.map(([g, gname]) => {
       const locked = remote || (g === 'computer' && !pc.enabled);
+      const noScreen = t => onServer() && toolKey(t) === 'open_on_computer';   // a server has no screen to open things on
       return {label: GROUP_SHORT[g] || gname, note: g === 'computer' && !pc.enabled && !remote ? 'Needs --allow-commands (see below)' : '',
         items: toggles.filter(t => t.group === g).sort((x, y) => toolRank(x) - toolRank(y)).map(t => ({key: toolKey(t), label: TOOL_SHORT[toolKey(t)] || t.title,
           title: `${t.title}: ${t.risk === 'read' ? 'it only looks, so it runs without asking' : t.alwaysAsk ? 'asks every time' : 'asks before it runs'}`,
-          on: !off.has(toolKey(t)), disabled: locked}))};
+          on: !off.has(toolKey(t)) && !noScreen(t), disabled: locked || noScreen(t)}))};
     });
     clear(body).append(
       h('p', {class: 'muted small'}, remote ? 'You can change these on the computer running the panel.'
@@ -4196,7 +4209,7 @@ function agentToolsCard() {
               s.search_brave_key_set ? btn('Forget the Brave key', async () => { S.health = await api('/api/settings', {method: 'POST', body: {search_brave_key: ''}}); toast('Brave key removed', 'ok'); render(); }, {small: true, kind: 'ghost'}) : null),
             out,
             h('p', {class: 'faint small'}, 'Why not Google? Google’s search API is closed to new users and shuts down in January 2027, and Google doesn’t allow programs to read its result pages. A SearXNG server can include Google’s results.')])),
-        fold('Commands on this computer', remote ? 'Not from a phone' : pc.enabled ? 'On' : 'Off', ...commandsInfo)));
+        fold(`Commands on ${hereName()}`, remote ? (onServer() ? 'Not from this device' : 'Not from a phone') : pc.enabled ? 'On' : 'Off', ...commandsInfo)));
     showExtra();
   };
   render();

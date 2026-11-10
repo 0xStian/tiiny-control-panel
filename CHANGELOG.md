@@ -5,6 +5,67 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-10
+
+### Added
+
+- **Run it on a home server.** The panel can now run all the time on a home server, a NAS or a Raspberry Pi, and you
+  open it from your laptop and your phone. Routines then run around the clock.
+  - **Server mode:** start it with `python3 tiiny_ui.py --server`. It listens on the network, and every device signs
+    in once with a one-time link or QR code.
+  - **Full or limited access for each device.** Full access for your own computers; limited for phones and other
+    people at home, with the same rules as paired phones. **System → Devices** lists every device, and a removed device
+    is signed out at once.
+  - **Setting it up needs no log:** open the panel's address and type the setup code. It's only on the server, in
+    `tiiny-data/setup-code.txt` (or `docker exec tiiny-panel tiiny-panel code`), so nobody else on your network can
+    claim the panel.
+  - **Sign-in links for more devices:** **Add a device** on a signed-in device, or `python3 tiiny_ui.py pair` on the
+    server.
+  - **Safe on your network:** it answers only IP addresses, the server's own name (like `nas.local`) and the names you
+    list, so websites can't reach it through a name they control. HTTPS by default (see below), or with your own
+    certificate, Tailscale or a reverse proxy.
+- **HTTPS without setting anything up,** so the microphone works on every device (🎤 and meetings):
+  - **Who gets it:** server mode (and the Docker image) and the phone listener of a normal install.
+  - **How:** the panel makes its own certificate. Each device's browser warns once, and the panel explains that
+    first: opening the `http://` address shows a page with a button to the `https://` one.
+  - **What stays as it was:** the server itself can still use plain HTTP (health checks, a local browser, reverse
+    proxies).
+  - **Choices:** your own certificate still wins, and `TIINY_UI_TLS=off` switches it off.
+- **One command for Docker:**
+  `curl -fsSL https://raw.githubusercontent.com/0xStian/tiiny-control-panel/main/docker/setup.sh | bash`.
+  - **What it does:** it sets up the folder and detects your user, group and time zone. It uses `sudo` only if your
+    user can't use Docker. Then it starts the panel and waits for it.
+  - **What it ends with:** the address, the setup code, and the exact commands to see them again or to get the newest
+    version (`… | bash -s -- --update`).
+  - **From a copy of the code,** `./docker/setup.sh` builds the image itself.
+  - **On the server,** `docker exec tiiny-panel tiiny-panel info` shows the same thing.
+- **A Docker image,** for x86-64 and 64-bit ARM, at `ghcr.io/0xstian/tiiny-control-panel`: the same panel in server
+  mode, started with one `compose.yaml`.
+  - **It sets itself up:** the first start installs Tiiny's own command-line tool with Tiiny's installer, and
+    everything is kept in one folder.
+  - **It runs as your user,** not as root, and only sees the folders you give it.
+  - **Updating:** `docker compose pull && docker compose up -d`. The panel still tells you when a new version is out,
+    and what's new.
+
+### Changed
+
+- **"The server" instead of "this computer"** in server mode, wherever the agent's tools, folders and approvals mean
+  the machine the panel runs on. *Open on computer*, the app-menu entry and **Stop the panel** aren't offered there.
+
+- **A reply that has to wait says why.** Your Tiiny answers one request at a time per model (measured), so a reply can
+  wait behind a code review, a routine or an app using the same model. It now says who's first, instead of showing only
+  the typing dots. The user guide explains how your Tiiny takes turns, for app and agent builders too.
+
+### Fixed
+
+- **Find my Tiiny found nothing on some networks,** where a firewall or the Wi-Fi swallows the answers to its search
+  (Fedora's firewall does). It now also asks each address on your home network directly.
+- **A plain-HTTP visit to an HTTPS port** no longer prints an error in the panel's log.
+- **A short chat message no longer wraps its last letter onto a new line** ("hell" / "o"): the bubble was a little
+  narrower than its own text.
+- **When your Tiiny refuses to delete a model,** the panel now shows its reason, like "Embedding models are protected
+  and cannot be deleted." (your Tiiny keeps the model the Vault needs), instead of only "Delete … failed".
+
 ## [1.3.0] - 2026-11-08
 
 ### Added
@@ -206,7 +267,9 @@ The first public release.
 - **A safer subset for phones.** No panel settings, terminals, folder browsing, local folders in reviews and projects,
   API key, or fetching local-network addresses.
 
-[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/0xStian/tiiny-control-panel/releases/tag/v1.0.0

@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v1.1.0 and this publishes the GitHub release, with that version's notes from CHANGELOG.md.
+# Push a tag like v1.1.0 and this publishes the GitHub release, with that version's notes from CHANGELOG.md, then the
+# Docker image of that version.
 # The panel's "Check for updates" (System → Tiiny Control Panel) reads the latest release.
 on:
   push:
@@ -8,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
@@ -33,3 +35,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" --title "Tiiny Control Panel ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag
+
+  # The Docker image of the same version, for always-on machines (compose.yaml), for amd64 and arm64 (a Raspberry Pi).
+  image:
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: The image's tags
+        id: tags
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          img="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "list=$img:$v,$img:${v%.*},$img:latest" >> "$GITHUB_OUTPUT"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          labels: org.opencontainers.image.version=${{ steps.tags.outputs.version }}

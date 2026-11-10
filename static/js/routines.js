@@ -41,9 +41,9 @@ function viewRoutines(root, ctx) {
   let items = [];
   root.append(
     h('div', {class: 'banner info'}, icon('clock'), h('div', {class: 'text'}, h('strong', {}, 'Routines run by themselves, on a schedule'),
-      h('span', {class: 'small'}, 'The panel runs them on this computer, even when no page is open. They never unload your models, and what they ' +
+      h('span', {class: 'small'}, `The panel runs them on ${hereName()}, even when no page is open. They never unload your models, and what they ` +
         'load is unloaded again afterwards. Commands and file changes always wait for your OK.'))),
-    card({title: 'Your routines', icon: 'clock', sub: 'Times are this computer’s local time',
+    card({title: 'Your routines', icon: 'clock', sub: `Times are ${hereName()}’s local time`,
       actions: [menuButton(ROUTINE_TEMPLATES.filter(t => !(t.computerOnly && remote)).map(t => ({label: t.title, icon: t.ic, fn: () => edit(null, t)})),
         {ic: 'plus', label: 'New routine', title: 'New routine'})]}, listBody));
 
@@ -164,7 +164,7 @@ function routineDialog(existing, template, remote) {
         field('Model', model, 'If it isn’t loaded and fits next to your models, it’s loaded for the run and unloaded again afterwards. Your models are never unloaded for it.'),
         h('div', {class: 'field'}, h('label', {}, 'It may use by itself'), ...groups,
           h('small', {class: 'hint'}, 'Tools that only look (search the Vault, check the device, the time) always run. Others it may not use are refused. ' +
-            'Commands and file changes on this computer always wait for your OK in its chat.')),
+            `Commands and file changes on ${hereName()} always wait for your OK in its chat.`)),
         projects.length ? field('Project', project, 'Use a project’s instructions, files and memory.') : null,
         h('label', {class: 'check'}, vault, h('span', {}, h('span', {}, 'Use my Vault'), h('small', {class: 'muted'}, 'Search your Vault for each run.')))];
       collect = () => ({kind: 'agent', prompt: prompt.value.trim(), model: model.value, tools: [...boxes].filter(([, c]) => c.checked).map(([k]) => k),

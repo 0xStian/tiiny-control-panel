@@ -14,6 +14,9 @@ tiiny_ui.py does that part, because it owns the listeners.
 
 TIINY_UI_UPDATE_API points the check at another server, for testing. Like --tiiny, it can only be set when starting the
 panel, never from the page.
+
+In the Docker image (TIINY_UI_CONTAINER=1) the check still works, but the panel never changes its own files: a container
+is updated by pulling the new image, so the page shows those commands instead (install_kind() says "container").
 """
 
 from __future__ import annotations
@@ -44,9 +47,9 @@ MAX_FILE = 50 * 1024 ** 2    # any one file in it
 MAX_TOTAL = 300 * 1024 ** 2  # everything it unpacks to
 # What an update may replace: the panel's own files. The rest of a release ZIP is left out, and nothing else in the
 # panel's folder is touched (your own notes next to it stay where they are).
-MANAGED_DIRS = ("tiinyui", "static", "docs", ".github")
+MANAGED_DIRS = ("tiinyui", "static", "docs", ".github", "docker")
 MANAGED_FILES = ("tiiny_ui.py", "LICENSE", ".gitignore", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md",
-                 "THIRD_PARTY_NOTICES.md")
+                 "THIRD_PARTY_NOTICES.md", "Dockerfile", "compose.yaml", ".dockerignore")
 NEEDED = ("tiiny_ui.py", "tiinyui/__init__.py", "static/index.html")
 PREVIOUS = ".previous"       # the version before the last update, in the panel's folder
 STAGING = ".update-"         # where an update is unpacked before it's swapped in
@@ -184,8 +187,14 @@ def _git(*args, timeout=60) -> str:
     return p.stdout
 
 
+CONTAINER_UPDATE = "docker compose pull && docker compose up -d"
+
+
 def install_kind():
-    """How this copy can be updated: ("git", ""), ("zip", ""), or ("manual", why it can't do it by itself)."""
+    """How this copy can be updated: ("git", ""), ("zip", ""), ("container", the commands that update the image),
+    or ("manual", why it can't do it by itself)."""
+    if os.environ.get("TIINY_UI_CONTAINER", "").strip().lower() in ("1", "true", "yes", "on"):
+        return "container", CONTAINER_UPDATE
     if (APP_DIR / ".git").exists():
         if not shutil.which("git"):
             return "manual", "This copy of the panel was cloned with git, but git isn't installed. Install git, then try again."
@@ -224,6 +233,8 @@ def install(job) -> dict:
         return _install_git(job)
     if kind == "zip":
         return _install_zip(job, st["release"])
+    if kind == "container":
+        raise UpdateError(f"This panel runs in a container. Update it on the server with: {note}")
     raise UpdateError(note)
 
 

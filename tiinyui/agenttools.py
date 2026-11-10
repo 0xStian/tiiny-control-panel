@@ -74,9 +74,11 @@ OUT_OF_ROOM = re.compile(r"request failed|internal|memory|out of|resource|insuff
 class Env:
     """The panel's parts the tools use (made once, in tiiny_ui.py)."""
 
-    def __init__(self, devconn, settings, store, projects, gallery, jobs, runtime, allow_commands=False, right_now=None):
+    def __init__(self, devconn, settings, store, projects, gallery, jobs, runtime, allow_commands=False, right_now=None,
+                 server=False, container=False):
         self.devconn, self.settings, self.store, self.projects, self.gallery = devconn, settings, store, projects, gallery
         self.jobs, self.rt, self.allow_commands, self.right_now = jobs, runtime, bool(allow_commands), right_now
+        self.server, self.container = bool(server), bool(container)   # server mode (no screen), the Docker image
 
 
 class Ctx:
@@ -1164,7 +1166,8 @@ TOOLS = [
     Tool("open_on_computer", "Open files and links", "computer", "open",
          "Open a file or folder in its usual app on the user’s computer, or a web link in their browser. It never runs programs or scripts.",
          _obj({"target": {"type": "string", "description": "A full path, a path in the home folder (~ works), or an http(s) link"}}, ["target"]),
-         _open, lambda a: f"Opening {s(a, 'target') or 'something'}", always_ask=True, when=_computer,
+         _open, lambda a: f"Opening {s(a, 'target') or 'something'}", always_ask=True,
+         when=lambda ctx: ctx.computer() and not ctx.env.server,   # a server has no screen to open things on
          preview=lambda a, ctx: [["Open", s(a, "target"), "code"]]),
 ]
 BY_NAME = {t.name: t for t in TOOLS}

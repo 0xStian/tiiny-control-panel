@@ -32,6 +32,7 @@ from .jobs import Cancelled
 SAVE_EVERY = 3.0          # seconds between saves while text streams (steps and the end save at once)
 DELTA_EVERY = 0.05        # seconds of text collected into one "delta" event
 APPROVAL_WAIT = 24 * 3600  # an approval nobody answers is declined after this long
+WAITING_NOTE_AFTER = 1.5   # seconds without an answer before a reply says what it waits for
 KEEP_FINISHED = 600       # seconds a finished turn stays available to pages that come late
 COMPUTER_RISKS = ("command", "file", "open", "computer")   # approved only on the computer the panel runs on
 
@@ -178,6 +179,8 @@ class Turn:
         self.t_first = None
         self.session = new_id("t")
         self.borrowed = []         # models this turn borrowed (unattended): given back at the end
+        self._waiting_said = False  # the reply says it's waiting for another request on its model (_say_waiting)
+        self._waiting_for, self._waiting_model, self._stream_started = "", "", None
         self.finished_at = None
 
     # -- the reply, changed under the lock, each change an event for the pages that follow it ----------------------
@@ -292,7 +295,7 @@ class Turn:
         except Cancelled:
             self.meta(stopped=True)
         except (TurnError, DeviceError, BadRequest, at.ToolError, decide.Unavailable) as e:
-            self.set(error=str(e) or e.__class__.__name__)
+            self.set(error=self._explain(e))
         except Exception as e:  # noqa: BLE001 - the reply says what went wrong instead of hanging
             traceback.print_exc()
             self.set(error=f"Something went wrong writing the reply: {e}")
@@ -548,11 +551,15 @@ class Turn:
             "To find something from the user’s earlier chats, meetings or Gallery, use search_my_history, then open_from_history." if off("search_my_history") else "",
             "You run on the user’s Tiiny device: never unload the model you are running on, because that ends this chat. generate_image makes room in NPU memory by itself.",
         ) if x)]
-        pc_tools = [n for n in at.COMPUTER_TOOLS if off(n)]
+        pc_tools = [n for n in at.COMPUTER_TOOLS if off(n) and at.BY_NAME[n].available(ctx)]
         if ctx.computer() and pc_tools:
             e = commands.environment()
+            where = (f"the server the panel runs on, inside its container, which only sees the folders mounted into it ({e['os']}, "
+                     f"{e['shell']}, home folder {e['home']})" if self.env.container else
+                     f"the server the panel runs on ({e['os']}, {e['shell']}, user {e['user']}, home folder {e['home']})" if self.env.server else
+                     f"the user’s computer ({e['os']}, {e['shell']}, user {e['user']}, home folder {e['home']})")
             out.append(" ".join(x for x in (
-                f"You can also work on the user’s computer ({e['os']}, {e['shell']}, user {e['user']}, home folder {e['home']}) with {', '.join(pc_tools)}.",
+                f"You can also work on {where} with {', '.join(pc_tools)}.",
                 "The user approves every command, file change and file opened, so say in one short sentence what you are about to do and why.",
                 "Never delete, move or overwrite the user’s files unless they asked for exactly that.",
                 "Prefer commands that only look at things. Don’t use sudo: there’s nowhere to type a password, so tell the user to run admin commands "
@@ -568,11 +575,21 @@ class Turn:
         USAGE.touch(model)
         out = {"content": "", "reasoning": "", "tool_calls": [], "usage": None, "finish": None, "model": None}
         calls = {}
-        with activity.track("/v1/chat/completions", model, phone=self.remote):
+        with activity.track("/v1/chat/completions", model, phone=self.remote) as entry:
+            self._stream_started = time.time()
+            first = threading.Event()   # this completion's first token (or tool call)
+            note = threading.Timer(WAITING_NOTE_AFTER, self._say_waiting, args=(entry, model, first))
+            note.daemon = True
+            note.start()
             gen = device.stream_chat(self.info(), payload, extras)
             try:
                 for ev in gen:
                     self.job.check()
+                    if ev[0] in ("delta", "tool_delta") and not first.is_set():
+                        first.set()
+                        if self._waiting_said:
+                            self._waiting_said = False
+                            self.status("")
                     if ev[0] == "delta":
                         if self.t_first is None:
                             self.t_first = time.time()
@@ -600,10 +617,51 @@ class Turn:
                             self.mgr.metrics.record_speed(st["model"], st["ttft"], st["tps"], st["tokens"])
                     self.maybe_save()
             finally:
+                first.set()
+                note.cancel()
                 gen.close()
         self.flush()
         out["tool_calls"] = [dict(c, id=c["id"] or f"call_{new_id('')}") for _, c in sorted(calls.items()) if c["name"]]
         return out
+
+    def _explain(self, e) -> str:
+        """The error for the reply, in plain words where the device's own is cryptic."""
+        msg = str(e) or e.__class__.__name__
+        if self._waiting_said and "timed out waiting for data" in msg.lower():   # it waited its turn too long
+            mins = round((time.time() - (self._stream_started or time.time())) / 60)
+            took = f"about {mins} minute{'' if mins == 1 else 's'}" if mins >= 1 else "less than a minute"
+            return (f"Your Tiiny gave up after waiting {took}: {self._waiting_model} was busy "
+                    f"the whole time with {self._waiting_for}, and it answers one request at a time per model. Try again when "
+                    "that's done, or stop it.")
+        return msg
+
+    def _say_waiting(self, entry, model, first):
+        """No answer yet: say who's ahead. Your Tiiny answers one request at a time per model, in order, so a reply can
+        wait behind the panel's other work on the same model (a code review, a routine, an app), or another app's."""
+        if first.is_set():
+            return
+        ahead = activity.ahead_of(entry)
+        name = npu.short(model)
+        if ahead:
+            titles = [a.get("title") or "another request" for a in ahead]
+            who = f"“{titles[0]}”" if len(titles) == 1 else f"{len(titles)} other requests"
+            text = (f"Waiting for your Tiiny: it answers one request at a time per model, and “{titles[0]}” is using {name} first."
+                    if len(titles) == 1 else
+                    f"Waiting for your Tiiny: {len(titles)} other requests are using {name} first ({', '.join(titles[:3])}).")
+        else:
+            try:   # someone outside the panel: the device counts more requests on the model than the panel sent
+                st, n, _ = device.call(self.info(), "core", "GET", "/api/v1/npu/status", timeout=10)
+                active = sum(int(a.get("active_request_count") or 0) for o in (n or {}).get("occupants") or []
+                             for a in o.get("activate_model") or [] if a.get("model_name") == model)
+            except (DeviceError, ValueError, TypeError):
+                return
+            if active <= activity.on_model(model):
+                return
+            text = f"Waiting for your Tiiny: another app is using {name} first. It answers one request at a time per model."
+            who = "another app"
+        if not first.is_set():
+            self._waiting_said, self._waiting_for, self._waiting_model = True, who, name
+            self.status(text)
 
     def _allow_settings(self) -> tuple:
         """The chat's own approval settings as they are now (you may change them while it runs)."""

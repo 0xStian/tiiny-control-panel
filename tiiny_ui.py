@@ -35,6 +35,7 @@ import codecs
 import hmac
 import http.client
 import http.cookies
+import ipaddress
 import json
 import os
 import re
@@ -43,6 +44,7 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import ssl
 import subprocess
 import sys
@@ -62,10 +64,11 @@ if os.name == "nt":  # the in-page terminal needs a Unix pseudo-terminal
     sys.exit("Tiiny Control Panel runs on Linux and macOS. Windows isn't supported yet.")
 
 from tiinyui import (VERSION, activity, agenttools, backup, commands, decide, device, firmware, gateway, history, launcher, mcp, npu,
-                     routines, selfupdate, tools, turns, webfetch, websearch)
-from tiinyui.browserauth import CODE_TTL, STORAGE_KEY, BrowserAuth
+                     routines, selfupdate, tlscert, tools, turns, webfetch, websearch)
+from tiinyui.browserauth import CODE_TTL, DEVICE_CODE_TTL, STORAGE_KEY, BrowserAuth
 from tiinyui.clitools import Runtime
-from tiinyui.common import BORROWED, USAGE, BadRequest, DeviceError, clamp_int, data_dir, error_message, guess_mime, mask, safe_name, valid_id
+from tiinyui.common import (BORROWED, USAGE, BadRequest, DeviceError, atomic_write, clamp_int, data_dir, error_message, guess_mime,
+                            mask, safe_name, valid_id)
 from tiinyui.device import (FORWARD_HEADERS, MAX_DEVICE_RESPONSE, SERVICES, DeviceConn, build_path, call as device_call,
                             device_json, device_open, discover_devices, multipart_body)
 from tiinyui.device import vault_upload as device_vault_upload
@@ -75,7 +78,7 @@ from tiinyui.review import Reviews
 from tiinyui.studio import Gallery, Studio
 from tiinyui.meetings import Meetings
 from tiinyui.metrics import Metrics
-from tiinyui.pairing import COOKIE, Pairing, device_name, lan_ip_towards
+from tiinyui.pairing import COOKIE, SERVER_CODE_TTL, Pairing, SetupCode, device_name, lan_ip_towards
 from tiinyui.pty import PtyManager
 from tiinyui.settings import Settings
 from tiinyui.store import Store
@@ -101,13 +104,244 @@ MEETINGS: Meetings
 METRICS: Metrics
 PAIRING: Pairing
 BROWSER: BrowserAuth
+SETUP = None   # server mode: the setup code for the first device (tiinyui/pairing.py SetupCode)
 HTTPD = None
 GATEWAY = None  # the gateway for other apps (tiinyui/gateway.py), started in main()
 TURNS = None    # chat replies the panel writes (tiinyui/turns.py), made in main()
 ROUTINES = None  # things the panel does on a schedule (tiinyui/routines.py), started in main()
+# Server mode (--server, or TIINY_UI_SERVER=1): the panel runs on an always-on machine (a home server, a NAS, the Docker
+# image) and every device signs in with a one-time link, each with full or limited access (tiinyui/pairing.py).
+# names: host names the Host check accepts besides IP addresses; url: the address printed in sign-in links;
+# container: running in the Docker image (TIINY_UI_CONTAINER=1), which is updated by pulling a new image.
+SERVER = {"on": False, "names": set(), "url": "", "container": False}
+
+
+def env_on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def server_host_ok(host: str) -> bool:
+    """Server mode's Host check: an IP address (with any port), localhost, or a name listed with --public-name.
+    A website trying to reach the panel through DNS rebinding sends its own domain name, so it's refused."""
+    host = (host or "").strip().lower()
+    if not host:
+        return False
+    if host.startswith("["):   # [IPv6]:port
+        name = host[1:host.find("]")] if "]" in host else ""
+    else:
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    if not name:
+        return False
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    return name == "localhost" or name in SERVER["names"]
+
+
+def server_base_url(port: int) -> str:
+    """Where devices reach the panel in server mode: TIINY_UI_PUBLIC_URL, else this machine's network address."""
+    url = (SERVER["url"] or os.environ.get("TIINY_UI_PUBLIC_URL", "")).strip().rstrip("/")
+    if url:
+        return url
+    tls = bool(TLS or OWN_TLS) or bool(os.environ.get("TIINY_UI_TLS_CERT") and os.environ.get("TIINY_UI_TLS_KEY"))
+    ip = lan_ip_towards() or "127.0.0.1"
+    return f"{'https' if tls else 'http'}://{ip}:{port}"
+
+
+def tls_off_env() -> bool:
+    return os.environ.get("TIINY_UI_TLS", "").strip().lower() in ("0", "off", "false", "no")
+
+
+def own_cert_names():
+    """The names and addresses the panel's own certificate covers: this machine's name (and name.local), its network
+    address, and the names and address you gave for server mode."""
+    me = socket.gethostname().strip().lower().rstrip(".")
+    first = me.split(".")[0]
+    names = [me, first, first + ".local"] if first and first != "localhost" else []
+    names += sorted(SERVER["names"])
+    ips = [lan_ip_towards((DEVCONN.resolve().get("address") or "") if DEVCONN else "")]
+    url_host = urllib.parse.urlsplit(SERVER["url"]).hostname if SERVER["url"] else ""
+    if url_host:
+        try:
+            ipaddress.ip_address(url_host)
+            ips.append(url_host)
+        except ValueError:
+            names.append(url_host)
+    return names, [i for i in ips if i]
+
+
+def browser_tls():
+    """The certificate for what browsers on other devices open (server mode, the phone listener): yours if you gave
+    one, else the panel's own (made the first time it's needed, tiinyui/tlscert.py), else None (HTTPS switched off)."""
+    if TLS:
+        return TLS
+    if TLS_STATE["off"]:
+        return None
+    with TLS_LOCK:
+        if not OWN_TLS:
+            names, ips = own_cert_names()
+            c = tlscert.ensure(CONFIG_DIR / "tls", names, ips)
+            OWN_TLS.update(cert=c.cert, key=c.key, fingerprint=c.fingerprint)
+    return OWN_TLS
+
+
+def tls_context(t) -> "ssl.SSLContext":
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(t["cert"], t["key"])
+    return ctx
+
+
+def tls_info(on: bool) -> dict:
+    """For the page: is it HTTPS, and with the panel's own certificate (browsers warn once) or yours."""
+    own = on and not TLS and bool(OWN_TLS)
+    return {"on": on, "own": own, "fingerprint": OWN_TLS.get("fingerprint", "") if own else ""}
+
+
+def cli_base_url(port=None) -> str:
+    """For `pair` and `code`: the address the running server-mode panel wrote when it started (SERVER_URL_FILE), else a
+    good guess (server mode serves HTTPS unless TIINY_UI_TLS=off)."""
+    if port is None:
+        try:
+            saved = SERVER_URL_FILE.read_text().strip()
+            if saved.startswith(("http://", "https://")):
+                return saved
+        except OSError:
+            pass
+        port = int(os.environ.get("TIINY_UI_PORT", "8765"))
+    url = os.environ.get("TIINY_UI_PUBLIC_URL", "").strip().rstrip("/")
+    if url:
+        return url
+    https = bool(os.environ.get("TIINY_UI_TLS_CERT") and os.environ.get("TIINY_UI_TLS_KEY")) or not tls_off_env()
+    return f"{'https' if https else 'http'}://{lan_ip_towards() or '127.0.0.1'}:{port}"
+
+
+def pair_command() -> str:
+    """How to make a sign-in link on the server (in the Docker image the entrypoint runs it as the data's owner)."""
+    return "docker exec tiiny-panel tiiny-panel pair" if SERVER["container"] else "python3 tiiny_ui.py pair"
+
+
+def code_command() -> str:
+    """How to see the setup code on the server."""
+    return "docker exec tiiny-panel tiiny-panel code" if SERVER["container"] else "python3 tiiny_ui.py code"
+
+
+def info_command() -> str:
+    """How to see where to open the panel, and how to sign in (python3 tiiny_ui.py info)."""
+    return "docker exec tiiny-panel tiiny-panel info" if SERVER["container"] else "python3 tiiny_ui.py info"
+
+
+def setup_code_path() -> Path:
+    """Where the setup code is kept: in the Docker image at the top of the data folder (./tiiny-data/setup-code.txt, next
+    to compose.yaml), where it's easy to find; otherwise with the panel's other settings."""
+    if SERVER["container"]:
+        return Path(os.environ.get("HOME") or "/data") / "setup-code.txt"
+    return CONFIG_DIR / "setup-code.txt"
+
+
+def setup_code_where() -> str:
+    """Where the setup code is, in words."""
+    return "setup-code.txt in the panel's data folder (tiiny-data)" if SERVER["container"] else str(setup_code_path())
+
+
+def make_setup(base: str) -> SetupCode:
+    return SetupCode(setup_code_path(), how_to=(
+        f"Open {base}/ in a browser and type this code there: that browser gets full access to the "
+        "panel. The code works until the first device has signed in, then this file is removed. Add more devices "
+        "from that browser, under System > Devices."))
+
+
+def code_main(argv) -> int:
+    """python3 tiiny_ui.py code: the setup code that gives the first device full access (server mode), and where to
+    type it. Like pair, it only needs the panel's config folder (in Docker: docker exec tiiny-panel tiiny-panel code)."""
+    ap = argparse.ArgumentParser(prog="tiiny_ui.py code",
+                                 description="Show the setup code that gives the first device full access (server mode).")
+    ap.add_argument("--port", type=int, default=None, help="the panel's port (default: the running panel's address)")
+    args = ap.parse_args(argv)
+    SERVER["container"] = env_on("TIINY_UI_CONTAINER")
+    if Pairing(CONFIG_DIR / "devices.json").has_owner():
+        print("This panel is already set up: a device has full access. Add another device from it (System > Devices),")
+        print(f"or make a sign-in link here: {pair_command()}")
+        return 0
+    base = cli_base_url(args.port)
+    print(f"Setup code: {make_setup(base).get()}")
+    print(f"Open {base}/ in a browser and type it there. That browser gets full access.")
+    return 0
+
+
+def info_main(argv) -> int:
+    """python3 tiiny_ui.py info: where to open the panel and what to do next, for server mode (in Docker:
+    docker exec tiiny-panel tiiny-panel info; docker/setup.sh shows it at the end). Exits 1 when the panel isn't
+    answering. Like pair and code, it only needs the panel's config folder."""
+    ap = argparse.ArgumentParser(prog="tiiny_ui.py info", description="Show where to open the panel and how to sign in (server mode).")
+    ap.add_argument("--port", type=int, default=None, help="the panel's port (default: the running panel's address)")
+    args = ap.parse_args(argv)
+    SERVER["container"] = env_on("TIINY_UI_CONTAINER")
+    base = cli_base_url(args.port)
+    url = urllib.parse.urlsplit(base)
+    public = bool(os.environ.get("TIINY_UI_PUBLIC_URL", "").strip())
+    port = args.port or int(os.environ.get("TIINY_UI_PORT") or 0) or (url.port if not public else None) or 8765
+    version = None
+    try:   # is it answering? (plain HTTP from this machine is always served, also when it serves HTTPS)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/__tiiny__", timeout=4) as r:
+            j = json.loads(r.read() or b"{}")
+            if j.get("app") == "tiiny-ui":
+                version = j.get("version") or VERSION
+    except (OSError, ValueError):
+        version = None
+    me = socket.gethostname().strip().lower().rstrip(".").split(".")[0]
+    also = ""
+    if not public and me and me != "localhost" and not re.fullmatch(r"[0-9a-f]{12}", me):   # a container's own id isn't a name
+        try:
+            ipaddress.ip_address(url.hostname or "")
+            also = f"   (or {url.scheme}://{me}.local:{url.port or port})"
+        except ValueError:
+            pass
+    own_cert = (url.scheme == "https" and not (os.environ.get("TIINY_UI_TLS_CERT") and os.environ.get("TIINY_UI_TLS_KEY"))
+                and (CONFIG_DIR / "tls" / "panel-cert.json").exists())
+    if version:
+        print(f"Tiiny Control Panel {version} is running.")
+    else:
+        print(f"The Tiiny Control Panel isn't answering on port {port} right now.")
+        print("  Start it: " + ("docker compose up -d, in its folder (docker compose logs shows why it stopped)" if SERVER["container"]
+                               else "python3 tiiny_ui.py --server") + ". When it runs, it's here:")
+    print(f"  Open        {base}/{also}")
+    pairing = Pairing(CONFIG_DIR / "devices.json")
+    if not pairing.has_owner():
+        print(f"  Setup code  {make_setup(base).get()}")
+        steps = "Type the setup code on that page. Add phones later under System > Devices."
+        if own_cert:
+            print("  Your browser warns once: the panel made its own certificate. Choose Advanced, then Continue.")
+        print(f"  {steps}")
+    else:
+        devices = pairing.list()
+        full = sum(1 for d in devices if d.get("role") == "owner")
+        print(f"  Signed in   {len(devices)} device{'' if len(devices) == 1 else 's'} ({full} with full access)")
+        print(f"  Add more under System > Devices, or make a sign-in link here: {pair_command()}")
+    if url.scheme == "http" and not public:
+        print("  Plain HTTP (HTTPS is switched off): other devices can't use the microphone.")
+    return 0 if version else 1
+
+
+def pair_main(argv) -> int:
+    """python3 tiiny_ui.py pair: a one-time sign-in link for a device, for server mode. It's signed with the panel's
+    browser key, so it works without a connection to the running panel (in Docker: docker exec tiiny-panel ...)."""
+    ap = argparse.ArgumentParser(prog="tiiny_ui.py pair", description="Make a one-time sign-in link for a device (server mode).")
+    ap.add_argument("--limited", action="store_true", help="limited access, like a phone: no settings, terminal, files or keys")
+    ap.add_argument("--port", type=int, default=None, help="the panel's port (default: the running panel's address)")
+    args = ap.parse_args(argv)
+    code = BrowserAuth(CONFIG_DIR / "browser-key").mint_device_code("limited" if args.limited else "owner")
+    print(f"{'Limited' if args.limited else 'Full'} access. Open this on the device; it works once, for {DEVICE_CODE_TTL // 60} minutes:")
+    print(f"  {cli_base_url(args.port)}/pair?code={code}")
+    return 0
 LAN = {"server": None, "ip": "", "port": 0, "error": ""}
 LAN_LOCK = threading.Lock()
-TLS = {}
+TLS = {}           # your certificate (--tls-cert / TIINY_UI_TLS_CERT): browsers, and the gateway's network listener
+OWN_TLS = {}       # the panel's own certificate (tiinyui/tlscert.py): only for what browsers open, never for apps
+TLS_STATE = {"off": False}   # --no-tls / TIINY_UI_TLS=off: plain HTTP
+TLS_LOCK = threading.Lock()
+SERVER_URL_FILE = CONFIG_DIR / "server-url"   # the address a running server-mode panel is reached at (for pair and code)
 JOBS = JobManager()
 PTYS = PtyManager()
 TOKEN = secrets.token_urlsafe(32)
@@ -316,17 +550,93 @@ class Handler(BaseHTTPRequestHandler):
             hosts |= {"127.0.0.1", "localhost", "[::1]"}
         return hosts
 
+    def host_ok(self, host: str) -> bool:
+        if not self.server.check_host:
+            return True
+        if self.server_mode():
+            return server_host_ok(host)
+        return host.strip().lower() in self.allowed_hosts()
+
+    def server_mode(self) -> bool:
+        return bool(getattr(self.server, "server_mode", False))
+
+    def secure_conn(self) -> bool:
+        return isinstance(self.connection, ssl.SSLSocket)
+
+    def from_this_machine(self) -> bool:
+        ip = str(self.client_address[0] or "")
+        return ip.startswith("127.") or ip in ("::1", "::ffff:127.0.0.1")
+
+    def https_switch(self, method, host):
+        """Plain HTTP from another device, on a listener that serves HTTPS: say where to go, and that the browser warns
+        once (the panel's own certificate) before the warning appears."""
+        target = f"https://{host}{self.path if self.path.startswith('/') else '/'}"
+        if method not in ("GET", "HEAD"):
+            return self.send_json(400, {"error": f"Use the secure address: {target}"})
+        esc = html_escape
+        own = not TLS and bool(OWN_TLS)
+        body = ('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                '<meta name="color-scheme" content="light dark"><title>Use the secure address</title>'
+                '<body style="font:16px/1.5 system-ui,sans-serif;max-width:34em;margin:10vh auto;padding:0 20px">'
+                '<h1 style="font-size:22px">Use the secure address</h1>'
+                '<p>The Tiiny Control Panel uses an encrypted connection. Browsers need it for the microphone, too.</p>'
+                f'<p><a href="{esc(target)}" style="display:inline-block;padding:10px 18px;border-radius:8px;background:#4f46e5;'
+                f'color:#fff;text-decoration:none;font-weight:600">Continue to {esc(target)}</a></p>'
+                + (('<p><b>Your browser will warn that the connection isn’t private.</b> That’s expected the first time: the panel '
+                    'made its own certificate for your home network, and no public authority vouches for home addresses. Choose '
+                    '<b>Advanced</b> (or <b>Show details</b>), then <b>Continue</b> (or <b>Visit this website</b>). Each device '
+                    'asks once.</p>'
+                    f'<p style="opacity:.75;font-size:13px">The certificate’s SHA-256 fingerprint, if you want to compare it with '
+                    f'what your browser shows: <span style="word-break:break-all">{esc(OWN_TLS.get("fingerprint", ""))}</span></p>') if own else "")
+                + '</body>')
+        self.send_bytes(200, body.encode(), "text/html; charset=utf-8", {
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+            "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+
     def dispatch(self, method):
         self._responded = False
         self._sse = False
+        self.device = None
         try:
             host = (self.headers.get("Host") or "").strip().lower()
-            if self.server.check_host and host not in self.allowed_hosts():
+            if not self.host_ok(host):
                 self.close_connection = True
+                if self.server_mode():
+                    return self.send_text(403, "Forbidden host. In server mode the panel answers IP addresses and the names "
+                                               "you list: add this name to TIINY_UI_PUBLIC_NAMES (or --public-name) on the "
+                                               "server, then restart the panel.")
                 return self.send_text(403, "Forbidden host")
+            if self.server.tls_ctx is not None and not self.secure_conn() and not self.from_this_machine():
+                self.close_connection = True   # plain HTTP from another device: point it at the HTTPS address
+                return self.https_switch(method, host)
             url = urllib.parse.urlsplit(self.path)
             path, query = url.path, urllib.parse.parse_qs(url.query)
-            if self.is_remote():  # phones and other paired devices
+            if self.server_mode():  # server mode: every device signs in, with full or limited access
+                if method == "GET" and path == "/pair":
+                    return self.lan_pair(query)
+                if method == "POST" and path == "/setup":   # the setup page's form (the first device)
+                    return self.setup_post()
+                if method == "GET" and path == "/__tiiny__":   # lets the Docker health check and a second start find it
+                    info = {"app": "tiiny-ui", "version": VERSION}
+                    challenge = query.get("challenge", [""])[0]
+                    if challenge and self.client_address[0] in ("127.0.0.1", "::1"):
+                        info["proof"] = BROWSER.proof(challenge)
+                    return self.send_json(200, info)
+                self.device = PAIRING.check(self.cookie(COOKIE), self.client_address[0])
+                if not self.device:
+                    self.close_connection = True
+                    if method == "GET" and path in ("/", "/index.html", "/setup"):
+                        if not PAIRING.has_owner():   # nobody has full access yet: set it up with the setup code
+                            return self.setup_page(401)
+                        return self.lan_page(401, "This device isn’t signed in yet",
+                                             "To sign it in, open a sign-in link on it. Make one on a device with full access: "
+                                             "System → Devices → Add a device. Or on the server, run "
+                                             f"{pair_command()} and open the link it shows.")
+                    return self.send_json(401, {"error": "This device isn't signed in to the Tiiny Control Panel."})
+                if self.device.get("role") != "owner" and path.startswith(LAN_FORBIDDEN):
+                    self.close_connection = True
+                    return self.send_json(403, {"error": "For safety, that only works on a device with full access."})
+            elif self.is_remote():  # phones and other paired devices
                 if method == "GET" and path == "/pair":
                     return self.lan_pair(query)
                 if not PAIRING.check(self.cookie(COOKIE), self.client_address[0]):
@@ -364,8 +674,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self.send_json(403, {"error": "Session expired. Reload the page.", "session": "expired"})
             origin = self.headers.get("Origin")
-            if method != "GET" and origin and self.server.check_host and \
-                    urllib.parse.urlsplit(origin).netloc.lower() not in self.allowed_hosts():
+            if method != "GET" and origin and self.server.check_host and not self.host_ok(urllib.parse.urlsplit(origin).netloc):
                 self.close_connection = True
                 return self.send_json(403, {"error": "Cross-origin request refused"})
             for m, rx, name in self.COMPILED:
@@ -456,7 +765,9 @@ class Handler(BaseHTTPRequestHandler):
             html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         except OSError:
             return self.send_text(500, "static/index.html is missing")
-        html = html.replace("{{TOKEN}}", TOKEN if self.is_remote() else "")
+        # the page carries the token for devices that signed in with a cookie (phones, server mode); here it swaps the
+        # browser's sign-in for it (tiinyui/browserauth.py)
+        html = html.replace("{{TOKEN}}", TOKEN if getattr(self.server, "lan", False) or self.server_mode() else "")
         self.send_bytes(200, html.encode(), "text/html; charset=utf-8",
                         {"Content-Security-Policy": CSP, "Referrer-Policy": "no-referrer"})
 
@@ -470,6 +781,7 @@ class Handler(BaseHTTPRequestHandler):
     def lan_page(self, status, title, text, extra_headers=None, refresh=None):
         esc = html_escape
         body = (f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                '<meta name="color-scheme" content="light dark">'
                 + (f'<meta http-equiv="refresh" content="1;url={esc(refresh)}">' if refresh else "")
                 + f'<title>{esc(title)}</title><body style="font:16px/1.5 system-ui,sans-serif;max-width:32em;margin:14vh auto;padding:0 20px">'
                 f'<h1 style="font-size:22px">{esc(title)}</h1><p>{esc(text)}</p></body>')
@@ -478,21 +790,100 @@ class Handler(BaseHTTPRequestHandler):
         self.send_bytes(status, body.encode(), "text/html; charset=utf-8", headers)
 
     def lan_pair(self, query):
+        server = self.server_mode()
         if PAIRING.blocked():
             self.close_connection = True
-            return self.lan_page(429, "Too many attempts", "Pairing is paused for a few minutes. Make a new code on your computer afterwards.")
-        token = PAIRING.redeem(query.get("code", [""])[0], device_name(self.headers.get("User-Agent") or ""), self.client_address[0])
+            return self.lan_page(429, "Too many attempts", "Signing in is paused for a few minutes. Make a new link afterwards."
+                                 if server else "Pairing is paused for a few minutes. Make a new code on your computer afterwards.")
+        token = PAIRING.redeem(query.get("code", [""])[0], device_name(self.headers.get("User-Agent") or ""), self.client_address[0],
+                               signed=BROWSER.check_device_code if server else None)
         if not token:
             self.close_connection = True
+            if server:
+                return self.lan_page(403, "This sign-in link doesn’t work any more",
+                                     "Each link works once, for a few minutes. Make a new one: on a device that's signed in, System → Devices → "
+                                     f"Add a device. Or on the server, run {pair_command()}.")
             return self.lan_page(403, "This pairing link doesn’t work any more",
                                  "Each code works once and only for 5 minutes. Make a new one on your computer: System → Phone and other devices.")
-        secure = "; Secure" if getattr(self.server, "tls", False) else ""
-        cookie = f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}"
-        return self.lan_page(200, "Paired", "This device can now use your Tiiny Control Panel. Opening it…",
-                             {"Set-Cookie": cookie}, refresh="/")
+        if server and SETUP and PAIRING.has_owner():
+            SETUP.remove()   # a device has full access now (by a link instead of the setup code): the code is done
+        return self.lan_page(200, "Signed in" if server else "Paired", "This device can now use your Tiiny Control Panel. Opening it…",
+                             {"Set-Cookie": self.session_cookie(token, server)}, refresh="/")
+
+    def session_cookie(self, token: str, server: bool) -> str:
+        """A signed-in device's cookie. Secure with HTTPS here, or (server mode) at a proxy in front, like Caddy or
+        tailscale serve. A client that fakes the header only gets a cookie its own browser won't send over plain HTTP."""
+        proxied = server and (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower() == "https"
+        secure = "; Secure" if self.secure_conn() or proxied else ""
+        return f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}"
+
+    def setup_page(self, status, error=""):
+        """Server mode, while no device has full access: type the setup code to give this browser full access. Plain
+        HTML with no scripts. The code is only on the server, so nobody else on the network can claim the panel."""
+        esc = html_escape
+        where = ("<li>in the file <b>setup-code.txt</b> in the panel's data folder (<b>tiiny-data</b>, next to "
+                 "<b>compose.yaml</b>), or</li>") if SERVER["container"] else f"<li>in the file <b>{esc(setup_code_where())}</b>, or</li>"
+        body = ('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                '<meta name="color-scheme" content="light dark"><title>Set up your Tiiny Control Panel</title>'
+                '<body style="font:16px/1.5 system-ui,sans-serif;max-width:32em;margin:10vh auto;padding:0 20px">'
+                '<h1 style="font-size:22px">Set up your Tiiny Control Panel</h1>'
+                '<p>Type the setup code to give this browser full access. You find it on the server, so only you have it:</p>'
+                f'<ul style="padding-left:1.2em">{where}<li>run <code style="font-family:ui-monospace,monospace;'
+                f'background:rgba(127,127,127,.15);padding:1px 5px;border-radius:4px">{esc(code_command())}</code></li></ul>'
+                + (f'<p role="alert" style="color:#c0392b;font-weight:600">{esc(error)}</p>' if error else "")
+                + '<form method="post" action="/setup" style="display:flex;gap:8px;flex-wrap:wrap;margin:18px 0">'
+                '<input name="code" required autofocus autocomplete="off" autocapitalize="characters" spellcheck="false" '
+                'maxlength="20" placeholder="ABCD-EFGH" aria-label="Setup code" '
+                'style="font:inherit;font-size:20px;letter-spacing:.08em;padding:8px 12px;width:10em;max-width:100%;box-sizing:border-box">'
+                '<button style="font:inherit;padding:8px 18px;cursor:pointer">Set up</button></form>'
+                '<p style="opacity:.75;font-size:14px">Other devices sign in afterwards: add them from this browser, under '
+                'System → Devices.</p></body>')
+        self.send_bytes(status, body.encode(), "text/html; charset=utf-8", {
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+                                       "frame-ancestors 'none'; base-uri 'none'",
+            "Referrer-Policy": "same-origin"})   # so the form's request carries this page's Origin (no-referrer sends "null")
+
+    def setup_post(self):
+        """The setup page's form: the right setup code gives this browser full access, while no device has it."""
+        origin = self.headers.get("Origin")
+        if origin and (origin == "null" or not self.host_ok(urllib.parse.urlsplit(origin).netloc)):
+            self.close_connection = True
+            return self.send_text(403, "Cross-origin request refused")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > 2048:
+            self.close_connection = True
+            return self.send_text(400, "That isn't a setup code.")
+        form = urllib.parse.parse_qs(self.rfile.read(n).decode("utf-8", "replace")) if n else {}
+        if PAIRING.blocked():
+            self.close_connection = True
+            return self.setup_page(429, "Too many wrong codes. Wait a few minutes, then try again.")
+        if PAIRING.has_owner():
+            self.close_connection = True
+            return self.lan_page(403, "This panel is already set up",
+                                 "A device has full access already. To sign this one in, open a link made on it (System → Devices → "
+                                 f"Add a device), or run {pair_command()} on the server.")
+        if not SETUP or not SETUP.matches((form.get("code") or [""])[0]):
+            PAIRING.fail()
+            self.close_connection = True
+            return self.setup_page(403, "That code isn’t right. Check it and try again.")
+        token = PAIRING.claim_first_owner(device_name(self.headers.get("User-Agent") or ""), self.client_address[0])
+        if not token:   # another browser got there a moment earlier
+            self.close_connection = True
+            return self.lan_page(403, "This panel is already set up", "Another device was set up a moment ago. Ask it for a sign-in link.")
+        SETUP.remove()
+        return self.lan_page(200, "You’re set up", "This browser has full access now. Opening the panel…",
+                             {"Set-Cookie": self.session_cookie(token, True)}, refresh="/")
 
     def is_remote(self) -> bool:
-        return bool(getattr(self.server, "lan", False))
+        """A phone or other device with limited access: paired on the phone listener, or limited in server mode."""
+        if getattr(self.server, "lan", False):
+            return True
+        if self.server_mode():
+            return (getattr(self, "device", None) or {}).get("role") != "owner"
+        return False
 
     def local_auth(self, query):
         """A one-time sign-in link opened by the panel. Its page keeps the browser's credential in the browser's
@@ -559,6 +950,9 @@ class Handler(BaseHTTPRequestHandler):
             "remote": self.is_remote(),
             "commands": dict(commands.environment(), enabled=True) if ALLOW_COMMANDS and not self.is_remote() else {"enabled": False},
             "update": selfupdate.summary(),
+            "server": SERVER["on"], "container": SERVER["container"],
+            "tls": tls_info(self.server.tls_ctx is not None) if self.server_mode() else None,
+            "role": (self.device or {}).get("role") if self.server_mode() else None,
         })
 
     def api_settings(self, q):
@@ -1235,16 +1629,32 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- API: phones and other devices --------------------------------------------------------
     def lan_info(self):
+        if self.server_mode():   # server mode: the main listener serves every device; this lists them
+            on = self.server.tls_ctx is not None
+            return {"server": True, "url": self.request_base() + "/", "tls": on, "tls_info": tls_info(on), "devices": PAIRING.list(),
+                    "me": (self.device or {}).get("id")}
         srv = LAN["server"]
-        scheme = "https" if TLS else "http"
+        on = bool(srv and srv.tls_ctx is not None) or (srv is None and (bool(TLS) or not TLS_STATE["off"]))
+        scheme = "https" if on else "http"
         return {"enabled": bool(SETTINGS.get("lan_enabled")), "running": srv is not None, "ip": LAN["ip"], "port": LAN["port"],
-                "url": f"{scheme}://{LAN['ip']}:{LAN['port']}/" if srv else "", "tls": bool(TLS), "error": LAN["error"],
+                "url": f"{scheme}://{LAN['ip']}:{LAN['port']}/" if srv else "", "tls": on, "tls_info": tls_info(on), "error": LAN["error"],
                 "devices": PAIRING.list()}
+
+    def request_base(self) -> str:
+        """The address this request came in on (in server mode the one the new device most likely reaches too)."""
+        host = (self.headers.get("Host") or "").strip()
+        if SERVER["url"] or not host:
+            return server_base_url(self.server.server_address[1])
+        https = (self.secure_conn() or self.server.tls_ctx is not None
+                 or (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower() == "https")
+        return f"{'https' if https else 'http'}://{host}"
 
     def api_lan(self, q):
         self.send_json(200, self.lan_info())
 
     def api_lan_set(self, q):
+        if self.server_mode():
+            raise BadRequest("In server mode every device already signs in on the panel's address (System → Devices).")
         on = bool(self.read_json().get("enabled"))
         SETTINGS.update({"lan_enabled": on})
         if on:
@@ -1254,23 +1664,34 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, self.lan_info())
 
     def api_lan_pair(self, q):
-        self.read_json()
+        body = self.read_json()
+        if self.server_mode():   # Add a device: a one-time link with full or limited access
+            role = "owner" if body.get("role") == "owner" else "limited"
+            code, ttl = PAIRING.new_code(role, SERVER_CODE_TTL)
+            return self.send_json(200, {"url": f"{self.request_base()}/pair?code={code}", "expires_in": ttl, "role": role})
         if not LAN["server"]:
             raise BadRequest("Turn on access from other devices first.")
         code, ttl = PAIRING.new_code()
-        scheme = "https" if TLS else "http"
+        scheme = "https" if LAN["server"].tls_ctx is not None else "http"
         self.send_json(200, {"url": f"{scheme}://{LAN['ip']}:{LAN['port']}/pair?code={code}", "expires_in": ttl})
 
     def api_lan_revoke(self, sid, q):
         self.read_json()
-        self.send_json(200, {"revoked": PAIRING.revoke(sid)})
+        revoked = PAIRING.revoke(sid)
+        if self.server_mode() and SETUP and not PAIRING.has_owner():
+            SETUP.get()   # nobody has full access any more: a new setup code (the old one was removed when used)
+        self.send_json(200, {"revoked": revoked})
 
     # -- API: app menu entry, stopping the panel -------------------------------------------------
     def api_launcher(self, q):
+        if SERVER["on"]:   # a server's app menu isn't where your devices are
+            return self.send_json(200, {"supported": False, "installed": False, "server": True})
         self.send_json(200, launcher.status())
 
     def api_launcher_set(self, q):
         body = self.read_json()
+        if SERVER["on"]:
+            raise BadRequest("In server mode the panel isn't added to an app menu; it runs as a service on the server.")
         try:
             out = launcher.install(Path(__file__), STATIC_DIR, START_ARGS) if body.get("installed") else launcher.remove()
         except OSError as e:
@@ -1279,6 +1700,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_shutdown(self, q):
         self.read_json()
+        if SERVER["on"]:   # nobody could start it again from a page
+            raise BadRequest("In server mode the panel runs as a service: stop or restart it on the server"
+                             + (" (docker compose restart)." if SERVER["container"] else "."))
         self.send_json(200, {"stopping": True})
         if HTTPD is not None:
             threading.Timer(0.3, HTTPD.shutdown).start()
@@ -1702,11 +2126,14 @@ def lan_start():
         except OSError as e:
             LAN["error"] = f"Couldn't listen on {ip}:{port}: {e}"
             raise BadRequest(LAN["error"])
-        srv.lan, srv.check_host, srv.lan_host, srv.tls = True, True, f"{ip}:{port}", bool(TLS)
-        if TLS:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(TLS["cert"], TLS["key"])
-            srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
+        srv.lan, srv.check_host, srv.lan_host = True, True, f"{ip}:{port}"
+        try:   # HTTPS with your certificate, else the panel's own, so phones get the microphone too
+            t = browser_tls()
+            srv.tls_ctx = tls_context(t) if t else None
+        except (OSError, ssl.SSLError, ValueError) as e:
+            srv.server_close()
+            LAN["error"] = f"Couldn't set up HTTPS for phones: {e}"
+            raise BadRequest(LAN["error"])
         threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True, name="lan").start()
         LAN.update(server=srv, ip=ip, port=port, error="")
 
@@ -1745,39 +2172,84 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
     check_host = True
+    tls_ctx = None   # an ssl.SSLContext when this listener serves HTTPS
+
+    def process_request_thread(self, request, client_address):
+        """HTTPS and plain HTTP on one port: a TLS hello is wrapped here, in the connection's own thread (so a slow
+        handshake never holds up the others); anything else stays plain, and the handler answers it."""
+        if self.tls_ctx is not None:
+            try:
+                request.settimeout(20)
+                first = request.recv(1, socket.MSG_PEEK)
+                if first == b"\x16":
+                    request = self.tls_ctx.wrap_socket(request, server_side=True)
+                request.settimeout(None)
+            except (OSError, ssl.SSLError, ValueError):
+                self.shutdown_request(request)
+                return
+        super().process_request_thread(request, client_address)
 
     def handle_error(self, request, client_address):
         # A browser closing a tab mid-request is normal; only print real problems.
-        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
-            return
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError, ssl.SSLError)):
+            return   # ... and plain HTTP or a scanner on an HTTPS port
         super().handle_error(request, client_address)
 
 
 def main():
-    global SETTINGS, RT, DEVCONN, STORE, PROJECTS, REVIEWS, GALLERY, STUDIO, MEETINGS, METRICS, PAIRING, BROWSER, HTTPD, VERBOSE, ALLOW_COMMANDS, GATEWAY, TURNS, ROUTINES
+    global SETTINGS, RT, DEVCONN, STORE, PROJECTS, REVIEWS, GALLERY, STUDIO, MEETINGS, METRICS, PAIRING, BROWSER, HTTPD, VERBOSE, ALLOW_COMMANDS, GATEWAY, TURNS, ROUTINES, SETUP
     if sys.argv[1:2] == ["mcp"]:   # python3 tiiny_ui.py mcp: the stdio bridge for AI assistants (tiinyui/mcp.py)
         sys.exit(mcp.bridge_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["pair"]:  # python3 tiiny_ui.py pair: a sign-in link for a device (server mode)
+        sys.exit(pair_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["code"]:  # python3 tiiny_ui.py code: the setup code for the first device (server mode)
+        sys.exit(code_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["info"]:  # python3 tiiny_ui.py info: where to open the panel and how to sign in (server mode)
+        sys.exit(info_main(sys.argv[2:]))
     ap = argparse.ArgumentParser(description="Local web interface for your Tiiny device.")
     ap.add_argument("--port", type=int, default=int(os.environ.get("TIINY_UI_PORT", "8765")))
-    ap.add_argument("--host", default="127.0.0.1",
-                    help="address to listen on (default 127.0.0.1; anything else exposes full control of your device)")
+    ap.add_argument("--host", default="",
+                    help="address to listen on (default 127.0.0.1, or 0.0.0.0 with --server; without --server anything else "
+                         "exposes full control of your device)")
+    ap.add_argument("--server", action="store_true", default=env_on("TIINY_UI_SERVER"),
+                    help="server mode, for an always-on machine: listen on the network, and every device signs in with a "
+                         "one-time link (python3 tiiny_ui.py pair) with full or limited access. Also TIINY_UI_SERVER=1.")
+    ap.add_argument("--public-name", action="append", default=[],
+                    help="server mode: a host name devices use to reach the panel (for example nas.local); IP addresses always "
+                         "work. Repeat it for more names. Also TIINY_UI_PUBLIC_NAMES (comma-separated).")
+    ap.add_argument("--public-url", default=os.environ.get("TIINY_UI_PUBLIC_URL", ""),
+                    help="server mode: the address printed in sign-in links (default: this machine's network address)")
     ap.add_argument("--tiiny", default="", help="path to the tiiny binary (default: search the usual places)")
     ap.add_argument("--cli-config", default="", help="the tiiny CLI's config file (default ~/.local/tiiny/config.json)")
     ap.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     ap.add_argument("--allow-commands", action="store_true",
                     help="let agent mode run commands and read and write files on this computer (it asks before each one)")
     ap.add_argument("--verbose", action="store_true", help="log every HTTP request")
-    ap.add_argument("--tls-cert", default="", help="certificate (PEM) for HTTPS on the local-network listener used by phones")
-    ap.add_argument("--tls-key", default="", help="private key (PEM) for --tls-cert")
+    ap.add_argument("--tls-cert", default=os.environ.get("TIINY_UI_TLS_CERT", ""),
+                    help="certificate (PEM) for HTTPS on the listener for phones, or in server mode for all devices")
+    ap.add_argument("--tls-key", default=os.environ.get("TIINY_UI_TLS_KEY", ""), help="private key (PEM) for --tls-cert")
+    ap.add_argument("--no-tls", action="store_true", default=tls_off_env(),
+                    help="no HTTPS for server mode and phones (without --tls-cert the panel makes its own certificate; "
+                         "also TIINY_UI_TLS=off)")
     ap.add_argument("--gateway-port", type=int, default=0,
                     help=f"port of the gateway other apps on this computer use (default {gateway.DEFAULT_PORT}; see Integrations)")
     args = ap.parse_args()
+    if args.server:
+        names = list(args.public_name) + [n for n in re.split(r"[\s,]+", os.environ.get("TIINY_UI_PUBLIC_NAMES", "")) if n]
+        url_host = urllib.parse.urlsplit(args.public_url).hostname if args.public_url else ""
+        # this machine's own name works too (nas, nas.local): such names only resolve on the local network, never
+        # through public DNS that a website could point at the panel
+        me = socket.gethostname().strip().lower().rstrip(".")
+        own = [me, me.split(".")[0], me.split(".")[0] + ".local"] if me and me != "localhost" else []
+        SERVER.update(on=True, names={tlscert.ascii_name(n) for n in names + own + [url_host or ""]} - {""},   # as browsers send them
+                      url=args.public_url.strip().rstrip("/"), container=env_on("TIINY_UI_CONTAINER"))
+    args.host = args.host or ("0.0.0.0" if args.server else "127.0.0.1")
     VERBOSE = args.verbose
 
     if not (STATIC_DIR / "index.html").is_file():
         sys.exit(f"Missing {STATIC_DIR / 'index.html'}; keep tiiny_ui.py next to its static/ and tiinyui/ folders.")
     BROWSER = BrowserAuth(CONFIG_DIR / "browser-key")
-    if args.host in ("127.0.0.1", "localhost", "::1") and already_running(args.port, BROWSER):
+    if not args.server and args.host in ("127.0.0.1", "localhost", "::1") and already_running(args.port, BROWSER):
         url = f"http://127.0.0.1:{args.port}/"
         print(f"The Tiiny Control Panel is already running at {url}")
         if args.no_browser:
@@ -1813,7 +2285,8 @@ def main():
     METRICS = Metrics(DEVCONN, SETTINGS, JOBS, STORE.root / "metrics")
     npu.setup(DEVCONN, SETTINGS, METRICS)
     TURNS = turns.Turns(agenttools.Env(DEVCONN, SETTINGS, STORE, PROJECTS, GALLERY, JOBS, RT, allow_commands=ALLOW_COMMANDS,
-                                       right_now=lambda info, npu_j, inst_j: Handler.right_now(info, {"npu": {"json": npu_j}, "instances": {"json": inst_j}})),
+                                       right_now=lambda info, npu_j, inst_j: Handler.right_now(info, {"npu": {"json": npu_j}, "instances": {"json": inst_j}}),
+                                       server=SERVER["on"], container=SERVER["container"]),
                         METRICS)
     ROUTINES = routines.Routines(STORE, TURNS, REVIEWS, JOBS, DEVCONN, SETTINGS)
     PAIRING = Pairing(CONFIG_DIR / "devices.json")
@@ -1827,17 +2300,25 @@ def main():
         TLS.update(cert=args.tls_cert, key=args.tls_key)
 
     httpd, last_error = None, None
-    for port in range(args.port, args.port + 10):
+    for port in ([args.port] if args.server else range(args.port, args.port + 10)):   # a server keeps its address
         try:
             httpd = Server((args.host, port), Handler)
             break
         except OSError as e:
             last_error = e
     if httpd is None:
-        sys.exit(f"Couldn't listen on {args.host}:{args.port}-{args.port + 9}: {last_error}")
+        sys.exit(f"Couldn't listen on {args.host}:{args.port}" + ("" if args.server else f"-{args.port + 9}") + f": {last_error}")
     HTTPD = httpd
     loopback = args.host in ("127.0.0.1", "localhost", "::1")
-    httpd.check_host = loopback
+    httpd.check_host = loopback or args.server   # server mode keeps the Host check, with its own rules (server_host_ok)
+    httpd.server_mode = bool(args.server)
+    TLS_STATE["off"] = bool(args.no_tls)
+    if args.server:   # every device connects over the network: HTTPS, with your certificate or the panel's own
+        try:
+            t = browser_tls()
+            httpd.tls_ctx = tls_context(t) if t else None
+        except (OSError, ssl.SSLError, ValueError) as e:
+            sys.exit(f"Couldn't set up HTTPS: {e}. Start with --no-tls (TIINY_UI_TLS=off) for plain HTTP.")
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/" if loopback else f"http://{args.host}:{port}/"
     dev = DEVCONN.resolve()
@@ -1850,21 +2331,46 @@ def main():
     gw = GATEWAY.status()
     ROUTINES.start()
 
-    print(f"Tiiny Control Panel {VERSION}")
+    print(f"Tiiny Control Panel {VERSION}" + (" (server mode" + (", in a container)" if SERVER["container"] else ")") if args.server else ""))
     print(f"  tiiny CLI : {RT.bin or 'not found (interactive features need it)'}" + (f"  ({RT.cli_version})" if RT.cli_version else ""))
     print(f"  device    : {dev['address'] or 'not set up'}" + (f"  (from {dev['sources']['address']})" if dev["address"] else ""))
     print(f"  API key   : {'found in ' + dev['sources']['key'] if dev['key'] else 'missing (log in from the Account page)'}")
     print(f"  your data : {STORE.root}")
     if port != args.port:
         print(f"  note      : port {args.port} is taken by another program, so the panel uses {port}")
-    print(f"  open      : {url}" + ("" if args.no_browser else "  (your browser opens it, signed in)"))
-    if args.no_browser:
+    if args.server:
+        base = server_base_url(port)
+        SETUP = make_setup(base)
+        try:
+            atomic_write(SERVER_URL_FILE, base + "\n")
+        except OSError:
+            pass
+        print(f"  open      : {base}/  (from your devices; every device signs in once)")
+        if not PAIRING.has_owner():
+            print(f"  set up    : open {base}/ and type the setup code {SETUP.get()}")
+            print(f"              (it's also in {setup_code_where()}, and {code_command()} shows it)")
+            print(f"  sign in   : {base}/pair?code={BROWSER.mint_device_code('owner')}")
+            print(f"              (or open this link: full access; works once, for {DEVICE_CODE_TTL // 60} min)")
+        else:
+            SETUP.remove()
+        print(f"  devices   : add more under System → Devices, or run: {pair_command()}")
+        print(f"  all this  : {info_command()}")
+    else:
+        print(f"  open      : {url}" + ("" if args.no_browser else "  (your browser opens it, signed in)"))
+    if args.no_browser and not args.server:
         print(f"  sign in   : {BROWSER.link(url)}  (works once, for {CODE_TTL // 60} min; run it again for a new link)")
     print(f"  apps      : {gw['url']}  (keys under Integrations)" if gw["running"] else
           f"  apps      : not available ({gw['error']})" if gw["enabled"] else "  apps      : gateway switched off (Integrations)")
     if ALLOW_COMMANDS:
         print("  commands  : agent mode may run commands and read and write files here (it asks before each one)")
-    if not loopback:
+    if args.server and OWN_TLS and not TLS:
+        print("  https     : with the panel's own certificate, so each browser warns once the first time: choose Advanced,")
+        print("              then Continue (the http:// address explains it). Your own certificate avoids that (--tls-cert).")
+        print(f"  fingerprint: SHA-256 {OWN_TLS['fingerprint']}")
+    elif args.server and not TLS:
+        print("  note      : plain HTTP (HTTPS is switched off). Use it on a network you trust. The microphone on other "
+              "devices needs HTTPS.")
+    elif not loopback and not args.server:
         print("  WARNING   : listening beyond this computer; anyone who can reach this address controls the device.")
     print("Press Ctrl+C to stop.")
     sys.stdout.flush()
@@ -1874,10 +2380,10 @@ def main():
     if SETTINGS.get("lan_enabled") and loopback:
         try:
             lan_start()
-            print(f"  phones    : {'https' if TLS else 'http'}://{LAN['ip']}:{LAN['port']}/  (paired devices only)")
+            print(f"  phones    : {'https' if LAN['server'].tls_ctx is not None else 'http'}://{LAN['ip']}:{LAN['port']}/  (paired devices only)")
         except BadRequest as e:
             print(f"  phones    : not available ({e})")
-    if not args.no_browser:
+    if not args.no_browser and not args.server:
         threading.Timer(0.7, open_signed_in, args=(url,)).start()
 
     def stop(*_):

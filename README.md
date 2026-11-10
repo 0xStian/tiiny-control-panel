@@ -11,9 +11,10 @@ Chat, agents, routines, projects, a music and 3D studio, meeting notes, code rev
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](docs/USER_GUIDE.md#what-you-need)
 [![Linux](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)](docs/USER_GUIDE.md#debian-ubuntu-fedora-arch-and-other-linux)
 [![No dependencies](https://img.shields.io/badge/dependencies-none-2ea44f)](#quick-start)
+[![Docker](https://img.shields.io/badge/docker-amd64%20%7C%20arm64-2496ED?logo=docker&logoColor=white)](#run-it-on-a-home-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[**Quick start**](#quick-start) · [**Features**](#features) · [**Screenshots**](#screenshots) · [**User guide**](docs/USER_GUIDE.md) · [**FAQ**](#faq)
+[**Quick start**](#quick-start) · [**Home server**](#run-it-on-a-home-server) · [**Features**](#features) · [**Screenshots**](#screenshots) · [**User guide**](docs/USER_GUIDE.md) · [**FAQ**](#faq)
 
 <img src="docs/images/hero.png" alt="The Tiiny Control Panel on a computer and on a phone" width="900">
 
@@ -83,6 +84,43 @@ Your browser opens the panel at **http://127.0.0.1:8765**, already signed in. Th
 
 The [user guide](docs/USER_GUIDE.md) walks through every page.
 
+## Run it on a home server
+
+The panel can also run all the time on a home server, a NAS or a Raspberry Pi, and you open it from your laptop and
+phone. Routines then run around the clock. With Docker, on a Linux machine on the same network as your Tiiny, one
+command sets it up, starts it and shows you where to go:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xStian/tiiny-control-panel/main/docker/setup.sh | bash
+```
+
+It ends like this (with your server's address):
+
+```
+Tiiny Control Panel 1.4.0 is running.
+  Open        https://192.168.1.20:8765/   (or https://nas.local:8765)
+  Setup code  K7QM-2XWD
+  Your browser warns once: the panel made its own certificate. Choose Advanced, then Continue.
+```
+
+1. **Open the address** on your laptop. The browser warns once, because the panel made its own certificate, so choose
+   **Advanced**, then **Continue**. Then type the setup code. That browser gets full access, and the microphone works.
+2. **Set up your Tiiny** from the dashboard: **Find my Tiiny**, then **Log in**.
+3. **Add your phone:** **System → Devices → Add a device**. Every device signs in once, with **full** or **limited**
+   access.
+
+**Run the same command again** in the same folder any time to see the address again. For the newest version, add
+`--update` like this:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xStian/tiiny-control-panel/main/docker/setup.sh | bash -s -- --update
+```
+
+Prefer doing it by hand? Use [`compose.yaml`](compose.yaml) with `docker compose up -d`, then
+`docker exec tiiny-panel tiiny-panel info`. Without Docker, start the panel with `python3 tiiny_ui.py --server`. The
+guide covers all of it, with HTTPS and folders:
+[Run it on a home server](docs/USER_GUIDE.md#run-it-on-a-home-server-server-mode-and-docker).
+
 ## Screenshots
 
 <table>
@@ -104,6 +142,7 @@ More, with every button explained: [the user guide](docs/USER_GUIDE.md).
 - **Any common Linux.** Debian, Ubuntu, Mint, Fedora, Arch, openSUSE and others, on x86-64 or 64-bit ARM ([commands for each](docs/USER_GUIDE.md#debian-ubuntu-fedora-arch-and-other-linux)).
 - **Python 3.8 or newer.** It uses only the standard library, and is tested with 3.8 to 3.14.
 - **The official `tiiny` command-line tool** (step 1 above).
+- **Or Docker,** on an always-on Linux machine: the image installs Tiiny's tool by itself ([home server](#run-it-on-a-home-server)).
 - **A web browser.** Chrome, Edge, Firefox or Safari, on a computer or a phone.
 
 ## Privacy and security
@@ -112,7 +151,8 @@ More, with every button explained: [the user guide](docs/USER_GUIDE.md).
 - **Only your browser can use the panel.** It listens on `127.0.0.1` and only works in a browser it has signed in, so other programs, user accounts and websites can't control your device.
 - **Apps get their own keys.** Other apps on your computer use your Tiiny through the panel's gateway (`127.0.0.1:8766`), each with a key you can limit and revoke. No key can manage the device, and web pages can't use the gateway.
 - **Your API key stays put.** It comes from the `tiiny` tool's own config and isn't copied anywhere.
-- **Phones need pairing.** Phone access is off until you pair a phone with a QR code. Paired phones can't reach your computer's files, settings or terminals, and you can remove one any time.
+- **Phones need pairing.** Phone access is off until you pair a phone with a QR code. Paired phones can't reach your computer's files, settings or terminals, and you can remove one any time. They connect over HTTPS with a certificate the panel makes itself, so the phone's browser warns once, and the microphone works.
+- **On a home server, every device signs in.** The first one with a setup code that's only on the server, the others with a one-time link, each with full or limited access, and you can remove any of them. Only IP addresses, the server's own name and names you list are answered.
 - **The agent asks first.** Agent actions that change something or go to the internet need your approval. Running commands on your computer is off unless you start the panel with `--allow-commands`, and then every command still asks, and only the computer can allow it. Routines only use the tools you allow them.
 
 Read more in [Your data and privacy](docs/USER_GUIDE.md#your-data-and-privacy). To report a security problem, see [SECURITY.md](SECURITY.md).
@@ -155,6 +195,15 @@ shares it lists for the loaded models at 100% at most, so a model can "not fit" 
 Go to **System → Tiiny Control Panel** and press **Check for updates**. When there's a new version, press **Update**,
 then **Restart now**. Your chats, projects and settings stay as they are. If you cloned the panel with git, `git pull`
 in its folder works too. You can also let it check once a day; it only asks GitHub which version is the latest.
+With Docker, run `docker compose pull && docker compose up -d`; the panel tells you when a new version is out.
+</details>
+
+<details>
+<summary><b>Can I run it in Docker, or on a NAS?</b></summary>
+
+Yes, on Linux (x86-64 or 64-bit ARM, like a Raspberry Pi). It's the same panel in server mode, so every device signs
+in once. The container uses the server's network to find your Tiiny, and only sees the folders you give it. See
+[Run it on a home server](docs/USER_GUIDE.md#run-it-on-a-home-server-server-mode-and-docker).
 </details>
 
 <details>

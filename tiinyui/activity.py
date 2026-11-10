@@ -111,6 +111,23 @@ def busy_models() -> set:
         return {e["model"] for e in _mine.values() if e["model"]}
 
 
+def ahead_of(entry) -> list:
+    """The panel's other requests on the same model that started before `entry`, oldest first. Your Tiiny answers one
+    request at a time per model, in the order they came (measured 2026-11-10; different models work at the same time),
+    so these are answered first."""
+    if not entry or not entry.get("model"):
+        return []
+    with _lock:
+        return [dict(e) for e in sorted(_mine.values(), key=lambda e: (e["started"], e["id"]))
+                if e["id"] != entry["id"] and e["model"] == entry["model"] and (e["started"], e["id"]) < (entry["started"], entry["id"])]
+
+
+def on_model(model) -> int:
+    """How many of the panel's requests are using `model` right now."""
+    with _lock:
+        return sum(1 for e in _mine.values() if e["model"] == model)
+
+
 def app_names(fetch, wanted) -> dict:
     """{app id: name} from the device's app list (KiloCode-Tiiny → KiloCode). `fetch()` returns the list; it's only
     called when an app isn't known yet, and at most every few minutes."""

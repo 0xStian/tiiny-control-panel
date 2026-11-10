@@ -95,8 +95,10 @@ function voiceInput({textarea, protect}) {
 
   async function start() {
     if (!secure()) {
-      toast('The microphone needs a secure connection', 'info', {timeout: 9000, detail: S.health?.remote
-        ? 'Browsers only allow the microphone on secure pages. Use the panel on your computer, or start it with --tls-cert and --tls-key (see the user guide).'
+      const https = location.protocol === 'http:' && !/^(localhost|127\.|\[::1\])/.test(location.hostname);
+      toast('The microphone needs a secure connection', 'info', {timeout: 12000, detail: https
+        ? `Browsers only allow the microphone on secure pages. Open the panel at https://${location.host}${location.pathname} instead ` +
+          '(the browser warns once: the panel made its own certificate).' + (S.health?.tls && !S.health.tls.on ? ' HTTPS is switched off on the server (TIINY_UI_TLS=off).' : '')
         : 'Browsers only allow the microphone on secure pages. Open the panel at http://127.0.0.1 on this computer.'});
       return;
     }

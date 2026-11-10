@@ -15,3 +15,6 @@ node_modules/
 # The panel's own updates (System → Tiiny Control Panel): the previous version, and an update being unpacked
 .previous/
 .update-*/
+
+# Docker: the data folder compose.yaml makes next to itself
+tiiny-data/

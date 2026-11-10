@@ -22,7 +22,63 @@ function qrSvg(text) {
   return svg;
 }
 
+/* Server mode (tiiny_ui.py --server): every device signs in once with a one-time link, with full or limited access
+   (tiinyui/pairing.py). The first link comes from the server's log or `python3 tiiny_ui.py pair`; more are made here. */
+function serverDevicesCard(ctx) {
+  if (S.health?.remote) return card({title: 'Devices', icon: 'phone', sub: 'Who can use this panel'},
+    h('p', {class: 'small muted'}, 'This device has limited access. A device with full access can add or remove devices.'));
+  const body = h('div', {class: 'stack'}, loadingBlock());
+  let timer = null, role = 'limited';
+  ctx.onCleanup(() => clearInterval(timer));
+  async function load() {
+    let st;
+    try { st = await api('/api/lan'); } catch (e) { clear(body).append(errorBlock(e.message)); return; }
+    if (ctx.alive()) render(st);
+  }
+  function render(st) {
+    clearInterval(timer);
+    const pairBox = h('div');
+    const ROLE = {owner: 'Full access', limited: 'Limited'};
+    const rows = [h('p', {class: 'small muted'}, 'Every device signs in once, with a link that works one time. Full access can do everything, including ' +
+      'settings, app keys, backups and the terminal. Limited access is for phones and other people: chats, the Vault, pictures and the device, but nothing ' +
+      'that changes the panel or reaches into the server.')];
+    if (!st.tls) rows.push(h('div', {class: 'banner warn'}, icon('alert'), h('div', {class: 'text small'}, h('strong', {}, 'Not encrypted'),
+      'HTTPS is switched off (TIINY_UI_TLS=off), so devices reach the panel over plain HTTP and the microphone only works on the ' +
+      'server itself. Use it on a network you trust, or switch HTTPS back on.')));
+    else if (st.tls_info?.own) rows.push(ownCertNote('each device'));
+    rows.push(h('div', {class: 'row wrap gap-sm'}, segmented([['limited', 'Limited (phones)'], ['owner', 'Full access']], role, v => { role = v; }),
+      btn('Add a device', async () => {
+        const p = await api('/api/lan/pair', {method: 'POST', body: {role}});
+        let left = p.expires_in;
+        const count = h('span', {class: 'small muted'});
+        const tick = () => { count.textContent = left > 0 ? `This link works once, for ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} more.` : 'This link has expired.'; left--; };
+        tick();
+        clearInterval(timer);
+        timer = setInterval(() => { tick(); if (left < -1) { clearInterval(timer); clear(pairBox); } }, 1000);
+        clear(pairBox).append(h('div', {class: 'pair-box'}, typeof qrcode === 'function' ? qrSvg(p.url) : null,
+          h('div', {class: 'stack-sm'}, h('strong', {}, `Scan this with the device’s camera (${ROLE[p.role].toLowerCase()})`),
+            h('span', {class: 'small muted'}, 'Or open this link on it:'), h('code', {class: 'pair-url'}, p.url), count,
+            h('div', {}, btn('Done', () => { clearInterval(timer); clear(pairBox); load(); }, {small: true, kind: 'ghost'})))));
+      }, {kind: 'primary', icon: 'plus'})), pairBox);
+    rows.push(h('div', {class: 'stack-sm'}, h('div', {class: 'section-title'}, 'Signed-in devices'), st.devices.map(d => h('div', {class: 'row'},
+      icon('phone'), h('div', {class: 'spacer', style: {minWidth: 0}},
+        h('div', {class: 'row gap-sm wrap'}, h('strong', {}, d.name), badge(ROLE[d.role] || d.role, d.role === 'owner' ? 'accent' : ''), d.id === st.me ? badge('This device', 'ok') : null),
+        h('div', {class: 'cell-sub'}, `Signed in ${fmtAgo(d.created)} · last seen ${fmtAgo(d.last_seen)}${d.ip ? ` · ${d.ip}` : ''}`)),
+      btn('Remove', async () => {
+        const me = d.id === st.me;
+        if (!(await confirmDialog({title: `Remove ${d.name}?`, danger: true, confirmLabel: 'Remove',
+          message: me ? 'This is the device you’re using. It’s signed out at once, and needs a new link to come back.' : 'It’s signed out at once, and needs a new link to come back.'}))) return;
+        await api(`/api/lan/devices/${d.id}`, {method: 'DELETE', body: {}});
+        if (me) location.reload(); else load();
+      }, {small: true, kind: 'ghost', icon: 'trash'})))));
+    append(clear(body), rows);
+  }
+  load();
+  return card({title: 'Devices', icon: 'phone', sub: 'Who can use this panel'}, body);
+}
+
 function devicesCard(ctx) {
+  if (onServer()) return serverDevicesCard(ctx);
   const body = h('div', {class: 'stack'}, loadingBlock());
   let pairTimer = null;
   ctx.onCleanup(() => clearInterval(pairTimer));
@@ -47,7 +103,8 @@ function devicesCard(ctx) {
       const pairBox = h('div');
       if (!st.tls) rows.push(h('div', {class: 'banner warn'}, icon('alert'), h('div', {class: 'text small'},
         h('strong', {}, 'Only on a network you trust'),
-        'Phones connect without encryption (plain HTTP). Anyone who can see your Wi-Fi traffic could take over a paired phone’s connection, so use this on your home network, not on shared or public Wi-Fi. For an encrypted connection, start the panel with --tls-cert and --tls-key.')));
+        'Phones connect without encryption (plain HTTP), because HTTPS is switched off (--no-tls). Anyone who can see your Wi-Fi traffic could take over a paired phone’s connection, and phones can’t use the microphone.')));
+      else if (st.tls_info?.own) rows.push(ownCertNote('the phone'));
       rows.push(h('div', {class: 'stack-sm'},
         h('div', {class: 'small'}, 'Address on your network: ', h('code', {}, st.url)),
         h('div', {class: 'row wrap gap-sm'}, btn('Pair a phone', async () => {
@@ -71,7 +128,8 @@ function devicesCard(ctx) {
           h('p', {class: 'muted'}, 'Ubuntu, Debian, Mint and others with ufw:'),
           h('code', {class: 'block'}, `sudo ufw allow ${port}/tcp`),
           h('p', {class: 'muted'}, 'Arch has no firewall switched on unless you set one up.'),
-          st.tls ? null : h('p', {class: 'muted'}, 'Browsers only allow the microphone on secure pages, so recording meetings from a phone needs HTTPS: start the panel with --tls-cert and --tls-key pointing at your own certificate.'))));
+          st.tls ? h('p', {class: 'muted'}, 'The phone shows a warning about the connection the first time: that’s the panel’s own certificate. Choose Advanced, then Continue.')
+            : h('p', {class: 'muted'}, 'Browsers only allow the microphone on secure pages, so recording meetings from a phone needs HTTPS, which is switched off (--no-tls).'))));
     }
     if (st.devices.length) {
       rows.push(h('div', {class: 'stack-sm'}, h('div', {class: 'section-title'}, 'Paired devices'), st.devices.map(d => h('div', {class: 'row'},
@@ -86,4 +144,14 @@ function devicesCard(ctx) {
   }
   load();
   return card({title: 'Phone and other devices', ic: 'phone', sub: 'Use the panel from your phone on the same network'}, body);
+}
+
+
+/* HTTPS with the panel's own certificate (tiinyui/tlscert.py): what the one-time browser warning is, before anyone
+   is surprised by it. */
+function ownCertNote(who) {
+  return h('div', {class: 'banner info'}, icon('shield'), h('div', {class: 'text small'}, h('strong', {}, 'Encrypted'),
+    `The panel made its own certificate, so ${who === 'the phone' ? 'a phone' : 'each device'}’s browser warns once the first time: ` +
+    'choose Advanced, then Continue. That’s expected; after that the connection is encrypted and the microphone works. ' +
+    'Your own certificate or Tailscale avoids the warning (see the user guide).'));
 }

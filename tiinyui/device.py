@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -200,8 +201,28 @@ def multipart_paths(fields: dict, files: list):
     return chunks(), f"multipart/form-data; boundary={boundary}", length
 
 
+def _home_network_hosts() -> list:
+    """Every other address in this machine's /24 on its home network. Some answers to a broadcast never come back
+    (Fedora's firewall drops them, and some Wi-Fi filters broadcasts), but answers to a message sent to one address do.
+    Private networks only, so a server on a public network never probes its neighbours."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 9))   # picks the interface toward the network; nothing is sent
+            me = s.getsockname()[0]
+        finally:
+            s.close()
+        ip = ipaddress.ip_address(me)
+    except (OSError, ValueError):
+        return []
+    if not ip.is_private or ip.is_loopback or ip.is_link_local:
+        return []
+    return [str(h) for h in ipaddress.ip_network(f"{me}/24", strict=False).hosts() if str(h) != me]
+
+
 def discover_devices(extra_targets=(), wait=2.0):
-    """UDP discovery, as `tiiny scan` does: broadcast GADGET_DISCOVER_V1 and collect replies."""
+    """UDP discovery, as `tiiny scan` does: broadcast GADGET_DISCOVER_V1 and collect replies. It also sends the message
+    to each address on the home network (see _home_network_hosts), once."""
     found = {}
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -217,11 +238,18 @@ def discover_devices(extra_targets=(), wait=2.0):
                     s.sendto(DISCOVERY_TOKEN, (t, DISCOVERY_PORT))
                 except OSError:
                     pass
+        for t in _home_network_hosts():
+            try:
+                s.sendto(DISCOVERY_TOKEN, (t, DISCOVERY_PORT))
+            except OSError:
+                pass
         deadline = time.time() + wait
         while time.time() < deadline:
             try:
                 data, (ip, _port) = s.recvfrom(65535)
             except socket.timeout:
+                continue
+            except (ConnectionRefusedError, ConnectionResetError):   # a "nothing here" from one of the addresses
                 continue
             except OSError:
                 break

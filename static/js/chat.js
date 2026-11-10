@@ -557,7 +557,7 @@ function viewChat(root, ctx) {
     if (current.agent) bits.push(current.agentAuto ? 'Agent mode (acts without asking)' : 'Agent mode (asks before actions)');
     if (current.project_id) bits.push(`Project: ${projectName(current.project_id)}`);
     if (current.pinned_count) bits.push(`${current.pinned_count} file(s) pinned`);
-    hint.textContent = bits.join(' · ') || 'Chats are saved on this computer.';
+    hint.textContent = bits.join(' · ') || `Chats are saved on ${hereName()}.`;
     hint.classList.toggle('default-hint', !bits.length);
   }
 
@@ -588,13 +588,14 @@ function viewChat(root, ctx) {
           st.status === 'running' && st.progress ? h('span', {class: 'faint small'}, st.progress) : st.summary ? h('span', {class: 'faint small'}, st.summary) : null,
           st.status === 'denied' ? badge('Skipped') : null), body);
       if (st.status === 'approval') {
-        const what = {network: 'This goes to the internet.', command: 'This runs a command on your computer, with your rights.',
-          file: 'This writes a file on your computer.', computer: 'This looks at files on your computer.',
-          open: 'This opens something on your computer.'}[st.risk] || 'This changes something.';
+        const pc = onServer() ? 'the server' : 'your computer';
+        const what = {network: 'This goes to the internet.', command: `This runs a command on ${pc}${onServer() ? '' : ', with your rights'}.`,
+          file: `This writes a file on ${pc}.`, computer: `This looks at files on ${pc}.`,
+          open: `This opens something on ${pc}.`}[st.risk] || 'This changes something.';
         const pcOnly = !!S.health?.remote && ['command', 'file', 'open', 'computer'].includes(st.risk);   // allowed only on the computer
         const ask = h('div', {class: `approval${st.alwaysAsk ? ' every-time' : ''}`},
           h('span', {}, what, st.note ? ` ${st.note}` : '', st.alwaysAsk ? ' You’re asked every time.' : '',
-            pcOnly ? ' You can allow it only on the computer running the panel.' : ' Allow it?'),
+            pcOnly ? (onServer() ? ' You can allow it only on a device with full access.' : ' You can allow it only on the computer running the panel.') : ' Allow it?'),
           h('div', {class: 'row gap-sm'},
             pcOnly ? null : btn({command: 'Run it', file: 'Write it', open: 'Open it'}[st.risk] || 'Allow', () => decide(st, 'once'), {small: true, kind: 'primary'}),
             st.alwaysAsk || pcOnly ? null : btn('Always in this chat', () => decide(st, 'always'), {small: true}),

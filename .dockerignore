@@ -1,0 +1,7 @@
+.git
+.github
+github-upload
+docs
+**/__pycache__
+**/*.pyc
+tiiny-data

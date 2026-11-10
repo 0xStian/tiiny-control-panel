@@ -31,6 +31,8 @@ from pathlib import Path
 from .common import atomic_write
 
 CODE_TTL = 600  # seconds a sign-in link works
+DEVICE_CODE_TTL = 600  # seconds a server-mode device link from `python3 tiiny_ui.py pair` works
+ROLES = ("owner", "limited")
 STORAGE_KEY = "tiiny-ui-credential"  # where the page keeps the credential (localStorage, per address)
 
 
@@ -90,6 +92,27 @@ class BrowserAuth:
 
     def check_credential(self, value: str, port: int) -> bool:
         return bool(value) and hmac.compare_digest(value.encode(), self.credential(port).encode())
+
+    # -- device sign-in links for server mode (python3 tiiny_ui.py pair) -------------------------
+    # In server mode every device signs in with a one-time link (tiinyui/pairing.py keeps one record per device). The
+    # links the `pair` command prints are signed with this key, so making one only needs the config folder, not a
+    # connection to the running panel. Pairing makes sure each one is used once.
+    def mint_device_code(self, role: str = "owner") -> str:
+        ts, nonce, role = str(int(time.time())), secrets.token_hex(8), role if role in ROLES else "limited"
+        return f"d1.{ts}.{nonce}.{role}.{self._mac('device', ts, nonce, role)[:40]}"
+
+    def check_device_code(self, code: str):
+        """(role, expiry time) for a well-signed device code that hasn't expired, else None."""
+        parts = (code or "").split(".")
+        if len(parts) != 5 or parts[0] != "d1" or not parts[1].isdigit() or parts[3] not in ROLES:
+            return None
+        _, ts, nonce, role, sig = parts
+        age = time.time() - int(ts)
+        if age > DEVICE_CODE_TTL or age < -60:
+            return None
+        if not hmac.compare_digest(sig, self._mac("device", ts, nonce, role)[:40]):
+            return None
+        return role, int(ts) + DEVICE_CODE_TTL
 
     # -- telling a second start that this really is our panel ----------------------------------
     def proof(self, challenge: str) -> str:

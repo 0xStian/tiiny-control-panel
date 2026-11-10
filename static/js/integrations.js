@@ -70,7 +70,7 @@ function viewIntegrations(root, ctx) {
 
   root.append(
     h('div', {class: 'banner info'}, icon('plug'), h('div', {class: 'text'}, h('strong', {}, 'Your Tiiny works with apps made for OpenAI, Anthropic (Claude) and Ollama, and with AI assistants'),
-      h('span', {class: 'small'}, 'Apps on this computer connect through the panel: each gets its own key, models load when an app needs them, and an app can’t manage your device.'))),
+      h('span', {class: 'small'}, `Apps on ${hereName()} connect through the panel: each gets its own key, models load when an app needs them, and an app can’t manage your device.`))),
     card({title: 'Apps that use your Tiiny', ic: 'plug', sub: 'Each app has its own key; revoke one any time',
       actions: remote ? null : [btn('Add an app', () => { addApp(); }, {kind: 'primary', icon: 'plus', small: true})]}, appsBody),
     card({title: 'Test the APIs', ic: 'play'}, h('div', {class: 'stack'},

@@ -15,7 +15,8 @@ Only the latest release gets security fixes.
 
 ## How the panel protects you
 
-- **Only this computer.** It listens on `127.0.0.1` unless you change that with `--host`, which shows a warning.
+- **Only this computer.** It listens on `127.0.0.1` unless you change that with `--host`, which shows a warning, or
+  start it in server mode (below).
 - **Only a browser it signed in.** Every program and user account on the computer can reach `127.0.0.1`, so the page
   carries no secrets. When the panel starts, it opens your browser with a one-time sign-in link (it expires after 10
   minutes). That link gives the browser a credential, which it keeps in its storage for the panel's exact address
@@ -37,8 +38,8 @@ Only the latest release gets security fixes.
   `tiiny` tool or a terminal, reveal the API key, update the panel, back up or restore its data, or make the panel
   fetch addresses on your local network. They can't allow the agent's steps that run commands, change files or open
   things on the computer (they can decline them), replies they start never get those tools, and they can't set up
-  routines that review a folder or may read or change the computer's files. Without
-  `--tls-cert`, phones use plain HTTP, so only use it on a network you trust.
+  routines that review a folder or may read or change the computer's files. Phones connect over HTTPS, with your
+  certificate (`--tls-cert`) or one the panel makes itself (below); `--no-tls` switches that off.
 - **The agent asks first.** Agent actions that change something or go to the internet need your approval. Text from
   web pages and search results is marked as untrusted for the model. Web searches send only the search words to the
   chosen engine (DuckDuckGo by default), and a Brave Search key stays on the server.
@@ -89,11 +90,57 @@ Only the latest release gets security fixes.
 - **Tools for AI assistants (MCP)** use the same app keys and need the "Tools (MCP)" scope, and each tool also needs its
   own scope. The stdio bridge (`python3 tiiny_ui.py mcp`) reads the files an assistant names on behalf of the assistant
   that started it; the panel itself never opens a path an app gives it.
+- **Server mode** (`--server`, and the Docker image) is for an always-on machine that your devices reach over the
+  network. It's off unless you start the panel that way.
+  - **Every device signs in.** A one-time link signs a device in. Links are signed with the browser key, expire after
+    10 minutes and work once: used ones are remembered in `devices.json` until they expire, so a restart can't make
+    one work again. A link comes from a signed-in device with full access, from `python3 tiiny_ui.py pair` on the
+    server (which needs the panel's config folder), or from the panel's log when it starts while no device has full
+    access. Treat that log like a password while the link is valid. Too many wrong links or codes pause signing in.
+  - **The first device can use the setup code** instead. While no device has full access, the panel's page asks for
+    it. The code is 8 random characters (about 8.5 × 10^11 possibilities). It's kept in `setup-code.txt`, readable only
+    by the panel's user (in Docker, at the top of the data folder), and `python3 tiiny_ui.py code` shows it. It works
+    only until a device has full access, then the file is removed. The form only takes requests from the panel's own
+    pages (`Origin`), and wrong codes count toward the same pause.
+  - **No trust by address.** Requests from the server itself (like a reverse proxy's) must sign in too, and the
+    `127.0.0.1` sign-in links and `POST /api/session` aren't served in server mode.
+  - **Sessions:** an `HttpOnly`, `SameSite=Lax` cookie (also `Secure` when it's set over HTTPS, or behind a proxy that
+    says the browser used HTTPS), plus the page's session token, which is new every time the panel starts. Only
+    fingerprints of the cookies are stored. A removed device is signed out at once.
+  - **Two kinds of access:** full access can do everything this computer's browser can; limited access gets the phone
+    rules above. Only full access can add or remove devices, change settings, see the server's folders, use the
+    terminal, or allow commands and file changes.
+  - **Against DNS rebinding,** only IP addresses, the server's own name (`nas` and `nas.local`, which only resolve on
+    the local network) and the names listed in `--public-name` (`TIINY_UI_PUBLIC_NAMES`) are answered, and requests
+    that change something must come from such an origin.
+  - **HTTPS by default:** with your certificate (`--tls-cert`, `--tls-key`), or else one the panel makes itself (below).
+    `TIINY_UI_TLS=off` (`--no-tls`) switches to plain HTTP.
+- **The panel's own certificate** (`tiinyui/tlscert.py`) is for server mode and the phone listener when you don't give
+  one:
+  - **What it is:** RSA-2048 with SHA-256, self-signed, not a CA, made with Python's standard library. It covers
+    `localhost`, this machine's name, `name.local` and its network address. Its key is in `tls/` in the config
+    folder, readable only by you.
+  - **Why browsers warn:** no public authority vouches for home addresses, so each browser warns once. The page you
+    get over `http://` shows the certificate's SHA-256 fingerprint, so you can compare it with what the browser shows.
+  - **What it isn't used for:** the gateway's listener for apps on other computers, because apps can't accept a
+    self-made certificate. That one uses only yours.
+  - **One port, both ways:** each connection is HTTPS or plain HTTP. Plain HTTP from another device only gets a page
+    pointing at the `https://` address (other methods are refused), after the Host check. Plain HTTP from the machine
+    itself is served as before (health checks, a local browser, reverse proxies), and still needs a sign-in.
+- **In the Docker image:**
+  - **Not as root:** the panel runs as the user that owns its data folder (`PUID` and `PGID`, by default 1000).
+  - **Only what you give it:** the container sees only its own files and the folders you mount. With
+    `--allow-commands`, the agent's commands run inside the container, each after your OK.
+  - **Tiiny's tool isn't bundled:** on its first start, the container installs it into the data folder with Tiiny's
+    official installer, from `tiiny-cli.tiiny.cloud`.
+  - **Updates:** the panel doesn't replace its own files there. New versions come as new images, built from this
+    repository by its Release workflow and published at `ghcr.io/0xstian/tiiny-control-panel`.
 - **Private files.** Saved data is stored in `~/.local/share/tiiny-ui/` and `~/.config/tiiny-ui/`, readable only by you.
 
 Things that are **out of scope**: the Tiiny device and its firmware, the official `tiiny` command-line tool, and
 attacks that need someone who can already run programs as your user on your computer (they can read your files,
-including the browser key).
+including the browser key). In server mode, that includes anyone who can use Docker on the server or read the panel's
+data folder.
 
 Known limit: like any web page on `127.0.0.1`, the panel can't protect you from software that takes its port while
 the panel isn't running, then gets your browser to open that address. That software could read the panel's stored

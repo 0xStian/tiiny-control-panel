@@ -450,7 +450,10 @@ select.input { padding-right: 28px; cursor: pointer; max-width: 100%; }
 .msg .avatar { width: 30px; height: 30px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; flex: none; }
 .msg .avatar .icon { width: 17px; height: 17px; }
 .msg .body { min-width: 0; max-width: 100%; }
-.msg.user .bubble { background: var(--accent); color: var(--accent-text); padding: 10px 14px; border-radius: 16px 16px 4px 16px; max-width: min(620px, 92%); margin-left: auto; white-space: pre-wrap; word-break: break-word; }
+/* the width limit is on .body, whose % is of the whole row: on the bubble it was a % of .body, which is only as wide as
+   the bubble, so the bubble came out a little narrower than its text and a short message's last letter wrapped */
+.msg.user .body { max-width: min(620px, 92%); }
+.msg.user .bubble { background: var(--accent); color: var(--accent-text); padding: 10px 14px; border-radius: 16px 16px 4px 16px; margin-left: auto; white-space: pre-wrap; overflow-wrap: break-word; }
 .msg.user .bubble a { color: inherit; text-decoration: underline; }
 .msg.assistant .body { flex: 1; }
 .msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; justify-content: flex-end; }
@@ -966,7 +969,7 @@ details.card.direct > summary .icon { width: 16px; height: 16px; color: var(--mu
   .chat-inner { padding: 0 12px; gap: 14px; }
   .msg { gap: 8px; }
   .msg .avatar { display: none; }
-  .msg.user .bubble { max-width: 88%; }
+  .msg.user .body { max-width: 88%; }
   .composer { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
   .composer-box { padding: 4px 4px 4px 6px; }
   .composer-box textarea { font-size: 16px; }
