@@ -311,6 +311,13 @@ async function dev(path, o = {}) {
   return res;
 }
 
+/* The Tiiny can answer /kb/finalize with 200 and "success": false (Tiiny's tool checks for it since 0.0.6): returns why,
+   or '' when it didn't say it failed (older versions don't send the flag). */
+function finalizeFailed(j) {
+  if (!j || j.success !== false) return '';
+  return [j.message, j.msg, j.detail, j.error].find(v => typeof v === 'string' && v.trim())?.trim() || 'Your Tiiny says indexing didn’t succeed.';
+}
+
 async function readSSE(resp, onEvent) {
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
@@ -1393,6 +1400,46 @@ function loginTerminal({reason = ''} = {}) {
   return openTerminal({args: ['login'], title: 'Log in to your Tiiny', hint: `${reason ? `${reason} ` : ''}Enter the password you chose when activating the device. It is sent only to the device.`,
     onExit: code => { if (code === 0) { toast('Logged in', 'ok'); refreshHealth(); refreshOverview(); refreshModels(); } }});
 }
+/* Log in with the Tiiny's password (POST /api/device/login). The password goes only to the Tiiny, and the key it answers
+   with is kept in Tiiny's tool's config, like `tiiny login` does. Works with every version of the tool (its 0.0.6 says
+   "Already logged in" without getting a key while the Tiiny is unlocked). The terminal stays one click away. */
+function loginDialog({reason = '', onDone} = {}) {
+  if (S.health?.remote) {
+    toast('Log in on a device with full access', 'info', {detail: 'Devices with limited access can’t log in to the Tiiny.'});
+    return null;
+  }
+  const id = 'login-' + uid();
+  const user = S.overview?.account?.json?.user_info?.user_name || '';
+  const pw = h('input', {id, class: 'input', type: 'password', autocomplete: 'current-password', maxlength: 256, spellcheck: 'false'});
+  const err = h('small', {class: 'field-error', role: 'alert', hidden: true});
+  const go = h('button', {class: 'btn primary', type: 'submit', form: `${id}-form`}, 'Log in');
+  const form = h('form', {class: 'form', id: `${id}-form`, novalidate: true},
+    typeof reason === 'string' && reason ? h('p', {class: 'muted'}, reason) : null,
+    user ? h('p', {}, 'Account: ', h('strong', {}, user)) : null,
+    h('div', {class: 'field'}, h('label', {for: id}, 'Your Tiiny’s password'), pw,
+      h('small', {class: 'hint'}, 'The password you chose when you activated your Tiiny. It goes only to your Tiiny, which allows 3 tries before it locks you out for a while.'), err));
+  const m = modal({title: 'Log in to your Tiiny', body: form, actions: [
+    h('button', {class: 'btn ghost', type: 'button', onclick: () => { m.close(); loginTerminal({reason: typeof reason === 'string' ? reason : ''}); }}, 'Use Tiiny’s tool instead'),
+    h('button', {class: 'btn ghost', type: 'button', onclick: () => m.close()}, 'Cancel'), go]});
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!pw.value) { err.textContent = 'Type your Tiiny’s password.'; err.hidden = false; pw.focus(); return; }
+    go.disabled = true; err.hidden = true;
+    try {
+      const r = await api('/api/device/login', {method: 'POST', body: {password: pw.value}});
+      pw.value = '';
+      m.close();
+      toast(r.user ? `Logged in as ${r.user}` : 'Logged in', 'ok', r.data_state === 'locked' ? {detail: 'Your Tiiny is still unlocking. This page checks again by itself.'} : {});
+      refreshHealth(); refreshModels();
+      refreshOverview().then(() => { if (typeof onDone === 'function') onDone(); });
+    } catch (e2) {
+      err.textContent = e2.message || 'Couldn’t log in.'; err.hidden = false;
+      pw.select(); pw.focus();
+    } finally { go.disabled = false; }
+  });
+  setTimeout(() => pw.focus(), 40);
+  return m;
+}
 function activateTerminal() {
   return openTerminal({args: ['init'], title: 'Activate your Tiiny', hint: 'First-time setup: choose a username and password, and optionally a recovery email.',
     onExit: () => { refreshHealth(); refreshOverview(); }});
@@ -1599,9 +1646,10 @@ function viewDashboard(root, ctx) {
   ctx.on('running', renderPlanner);
   ctx.on('models', renderPlanner);
 
-  async function load() {
-    const o = await refreshOverview();
+  // Every overview refresh redraws it, whoever asked for it: a login or a setting shows at once, not on the next tick.
+  function render() {
     if (!ctx.alive()) return;
+    const o = S.overview;
     renderBanner(banner, o);
     renderDevice(devBody, o);
     renderResources(resBody, o);
@@ -1609,6 +1657,8 @@ function viewDashboard(root, ctx) {
     renderLoadedModels(loadedBody);
     renderPlanner();
   }
+  ctx.on('overview', render);
+  const load = () => refreshOverview();
   load();
   if (!S.modelsAt) refreshModels();
   if (!Downloads.timer) Downloads.poll();  // model downloads show in Right now too
@@ -1648,7 +1698,7 @@ function renderBanner(el, o) {
   } else if (st === 'locked') {
     el.append(h('div', {class: 'banner warn'}, icon('key'), h('div', {class: 'text'}, h('strong', {}, 'Your Tiiny is locked'),
       h('span', {class: 'small'}, 'It locks its data every time it restarts or loses power. Until you log in, its models, Vault, connectors and monitor don’t run. Log in to unlock it; the rest starts by itself within a minute or two.')),
-      btn('Log in', () => loginTerminal({reason: 'This unlocks your Tiiny.'}), {kind: 'primary', icon: 'login'})));
+      btn('Log in', () => loginDialog({reason: 'This unlocks your Tiiny.'}), {kind: 'primary', icon: 'login'})));
   } else if (st === 'starting') {
     const long = Date.now() - (S.stateSince || Date.now()) > 5 * 60_000;
     el.append(h('div', {class: `banner ${long ? 'warn' : 'info'}`}, long ? icon('alert') : h('span', {class: 'spinner'}), h('div', {class: 'text'}, h('strong', {}, long ? 'Your Tiiny’s services still aren’t answering' : 'Your Tiiny is starting up'),
@@ -1657,7 +1707,7 @@ function renderBanner(el, o) {
   } else if (st === 'login') {
     el.append(h('div', {class: 'banner warn'}, icon('key'), h('div', {class: 'text'}, h('strong', {}, 'Log in to your device'),
       h('span', {class: 'small'}, o?.conn?.key_set ? 'The saved API key was rejected.' : 'No API key yet. Log in once and the CLI remembers it.')),
-      btn('Log in', loginTerminal, {kind: 'primary', icon: 'login'}), btn('Activate a new device', activateTerminal, {kind: 'ghost'})));
+      btn('Log in', loginDialog, {kind: 'primary', icon: 'login'}), btn('Activate a new device', activateTerminal, {kind: 'ghost'})));
   }
   const npu = o?.npu?.json?.npu;
   if (st === 'online' && npu && npu.status && npu.status !== 'ready') {
@@ -1817,7 +1867,7 @@ function nowLast(l) {
 function nowCard(ctx) {
   const body = h('div', {class: 'now-body'}, loadingBlock());
   const el = card({title: 'Right now', sub: 'What your Tiiny is doing', cls: 'now-card', actions: [btn('Live monitor', () => (S.state === 'locked'
-    ? loginTerminal({reason: 'Your Tiiny is locked, so the monitor can’t start yet. Log in to unlock it, then open the monitor again.'})
+    ? loginDialog({reason: 'Your Tiiny is locked, so the monitor can’t start yet. Log in to unlock it, then open the monitor again.'})
     : openTerminal({args: ['top'], title: 'Live NPU monitor (tiiny top)'})), {small: true, icon: 'terminal', kind: 'ghost'})]}, body);
   el.id = 'now-card';
   const subEl = el.querySelector('.card-head .titles p');
@@ -2111,7 +2161,8 @@ const VaultUploader = {
         }
         if (sourceId) {
           const f = await dev('/kb/finalize', {service: 'kb', method: 'POST', json: {source_id: sourceId}, label: `Index ${item.name}`, timeout: 1800, silent: true});
-          if (!f.ok) { set({state: 'done', pct: 100, stage: `Added, but indexing failed: ${f.error}. Load an embedding model, then press Index.`}); emit('vault-changed'); return; }
+          const why = f.ok ? finalizeFailed(f.json) : f.error;
+          if (why) { set({state: 'done', pct: 100, stage: `Added, but indexing failed: ${why}. Load an embedding model, then press Index.`}); emit('vault-changed'); return; }
         }
       }
       set({state: 'done', pct: 100, sourceId: sid, stage: this.autoIndex ? 'Added and indexed.' : 'Added. Press Index when you want it searchable.'});
@@ -2281,7 +2332,9 @@ function viewVault(root, ctx) {
 
   async function indexFile(x) {
     const r = await dev('/kb/finalize', {service: 'kb', method: 'POST', json: {source_id: x.source_id}, label: `Index ${x.filename}`, timeout: 1800});
-    if (r.ok) toast(`${x.filename} indexed`, 'ok');
+    const why = r.ok && finalizeFailed(r.json);
+    if (why) toast(`${x.filename} wasn’t indexed`, 'err', {detail: why});
+    else if (r.ok) toast(`${x.filename} indexed`, 'ok');
     load();
   }
   async function downloadFile(x) {
@@ -3379,7 +3432,7 @@ function viewNetwork(root, ctx) {
     await refreshOverview();
     refreshModels();
     renderDevice(undefined);
-    if (S.state === 'login' || S.state === 'locked') { const go2 = await confirmDialog({title: 'Log in to this device?', message: S.state === 'locked' ? 'This device is locked. Log in to unlock it before the panel can use it.' : 'This device needs you to log in before the panel can use it.', confirmLabel: 'Log in'}); if (go2) loginTerminal(); }
+    if (S.state === 'login' || S.state === 'locked') { const go2 = await confirmDialog({title: 'Log in to this device?', message: S.state === 'locked' ? 'This device is locked. Log in to unlock it before the panel can use it.' : 'This device needs you to log in before the panel can use it.', confirmLabel: 'Log in'}); if (go2) loginDialog(); }
   }
 
   loadWifi();
@@ -3408,7 +3461,7 @@ function viewAccount(root, ctx) {
       kvList([['Username', acct.user_info?.user_name || kv.Username], ['Email', kv.Email || h('span', {class: 'muted'}, 'none bound')], ['Device', acct.user_info?.device_name],
         ['Device ID', acct.device_id], ['Signed in', S.health?.device?.key_set ? `yes (key from ${S.health.device.sources.key})` : 'no']]),
       h('div', {class: 'row wrap'},
-        btn('Log in', loginTerminal, {kind: 'primary', icon: 'login', small: true}),
+        btn('Log in', () => loginDialog({onDone: () => ctx.alive() && loadAccount()}), {kind: 'primary', icon: 'login', small: true}),
         btn('Log out', async () => {
           if (!(await confirmDialog({title: 'Log out?', message: 'This removes the saved API key from the tiiny CLI on this computer. The panel stops working until you log in again.', confirmLabel: 'Log out', danger: true}))) return;
           const r = await cli(['logout'], {label: 'Log out'});

@@ -5,6 +5,36 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-10
+
+### Changed
+
+- **Log in with your Tiiny's password, right in the panel.**
+  - **What changed:** **Log in** opens a password box instead of a terminal.
+  - **Where the password goes:** only to your Tiiny, with the same request `tiiny login` makes.
+  - **Where the key goes:** the key your Tiiny answers with is saved where `tiiny login` keeps it.
+  - **Tiiny's tool is still there:** it's one click away in the box.
+- **The dashboard updates as soon as you log in** or change a setting, instead of on its next refresh a few seconds
+  later.
+
+### Fixed
+
+- **You couldn't log in with Tiiny's tool 0.0.6**, released on 2026-11-10, while your Tiiny was unlocked.
+  - **What happened:** `tiiny login` said "Already logged in" without getting a key, so the panel kept asking you to log
+    in. That hit every new setup, like a fresh Docker data folder.
+  - **Now:** logging in from the panel doesn't depend on the tool's version.
+- **The Vault no longer says "Indexed" when your Tiiny says indexing failed.** Your Tiiny can answer "OK" with
+  "success": false (Tiiny's tool checks for it since 0.0.6). You now see its reason instead, when you index a file and
+  when the agent or an app saves one.
+- **New chat, clicked right after opening Chat, could jump back to the previous chat** while the chat list was still
+  loading. Now the chat you start or open while it loads stays open.
+- **The Docker setup command could start an old image instead of the published one.**
+  - **When:** an image with the same name was already on the machine, like an earlier test build.
+  - **What you saw:** it ended with "unrecognized arguments: info" instead of the address.
+  - **Now:** a new setup always downloads the newest image, and an image that no release made is replaced with the
+    published one. If the panel still can't say where to open it, the command shows what the panel printed when it
+    started.
+
 ## [1.4.0] - 2026-11-10
 
 ### Added
@@ -267,7 +297,8 @@ The first public release.
 - **A safer subset for phones.** No panel settings, terminals, folder browsing, local folders in reviews and projects,
   API key, or fetching local-network addresses.
 
-[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.1.0...v1.2.0

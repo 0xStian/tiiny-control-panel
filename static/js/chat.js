@@ -411,6 +411,28 @@ function viewChat(root, ctx) {
   ctx.onCleanup(() => { stopReading(); mic.cancel(); });   // leaving the chat stops reading aloud and recording
 
   /* ---- data ---- */
+  async function pickChat() {
+    const wantId = ctx.params[0];
+    const wantProject = ctx.query.get('project');
+    let pick = null;
+    if (ChatUI.preset) {
+      const preset = ChatUI.preset;
+      ChatUI.preset = null;
+      pick = newChatRecord({model: preset});
+    } else if (wantProject) {
+      pick = newChatRecord({project_id: wantProject, agent: ChatUI.projects.find(p => p.id === wantProject)?.agent});
+      ChatUI.scope = wantProject;
+    } else if (wantId) {
+      try { pick = await loadChat(wantId); } catch { toast('That chat no longer exists', 'err'); }
+    }
+    if (!pick && ChatUI.currentId) { try { pick = await loadChat(ChatUI.currentId); } catch { pick = null; } }
+    if (!pick) {
+      const first = visibleSummaries()[0];
+      pick = first ? await loadChat(first.id).catch(() => null) : null;
+    }
+    if (!pick) pick = newChatRecord({project_id: ChatUI.scope !== 'all' && ChatUI.scope !== 'none' ? ChatUI.scope : null});
+    if (!current) current = pick;   // (the user may have picked one while this loaded)
+  }
   async function boot() {
     if (!ChatUI.migrated) { ChatUI.migrated = true; await migrateBrowserChats(); }
     try {
@@ -419,24 +441,9 @@ function viewChat(root, ctx) {
       ChatUI.projects = projects;
     } catch (e) { inner.append(errorBlock(e.message, {title: 'Couldn’t load your chats'})); return; }
     if (!ctx.alive()) return;
-    const wantId = ctx.params[0];
-    const wantProject = ctx.query.get('project');
-    if (ChatUI.preset) {
-      const preset = ChatUI.preset;
-      ChatUI.preset = null;
-      current = newChatRecord({model: preset});
-    } else if (wantProject) {
-      current = newChatRecord({project_id: wantProject, agent: ChatUI.projects.find(p => p.id === wantProject)?.agent});
-      ChatUI.scope = wantProject;
-    } else if (wantId) {
-      try { current = await loadChat(wantId); } catch { toast('That chat no longer exists', 'err'); }
-    }
-    if (!current && ChatUI.currentId) { try { current = await loadChat(ChatUI.currentId); } catch { current = null; } }
-    if (!current) {
-      const first = visibleSummaries()[0];
-      current = first ? await loadChat(first.id).catch(() => null) : null;
-    }
-    if (!current) current = newChatRecord({project_id: ChatUI.scope !== 'all' && ChatUI.scope !== 'none' ? ChatUI.scope : null});
+    // A chat started or opened while the list was loading (New chat clicked straight away) wins over the automatic pick.
+    if (!current) await pickChat();
+    if (!ctx.alive()) return;
     ChatUI.cache.set(current.id, current);
     ChatUI.currentId = current.id;
     renderAll();

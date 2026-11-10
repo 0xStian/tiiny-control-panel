@@ -14,7 +14,7 @@ import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .common import BORROWED, USAGE, BadRequest, DeviceError, clamp_int, error_message, guess_mime, host_only, mask
+from .common import BORROWED, USAGE, BadRequest, DeviceError, atomic_write, clamp_int, error_message, guess_mime, host_only, mask
 
 if TYPE_CHECKING:
     from .settings import Settings
@@ -61,12 +61,7 @@ class DeviceConn:
         address, key = s.get("device_address"), s.get("api_key")
         sources = {"address": "settings" if address else "", "key": "settings" if key else ""}
         cfg_path = self.cli_config_path()
-        try:
-            cfg = json.loads(cfg_path.read_text())
-        except (OSError, ValueError):
-            cfg = {}
-        if not isinstance(cfg, dict):
-            cfg = {}
+        cfg = read_cli_config(cfg_path)
         if not address:
             address = str(cfg.get("deviceAddress") or cfg.get("device_ip") or "")
             sources["address"] = "tiiny CLI config" if address else ""
@@ -86,6 +81,62 @@ class DeviceConn:
     def public(info: dict) -> dict:
         return {"address": info["address"], "port": info["port"], "key_set": bool(info["key"]),
                 "key_hint": mask(info["key"]), "sources": info["sources"], "cli_config": info["cli_config"]}
+
+
+def read_cli_config(path: Path) -> dict:
+    """Tiiny's tool's config, or {} when it's missing or isn't a JSON object."""
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def save_cli_key(path: Path, key: str, address: str = "") -> None:
+    """Keep a key the way `tiiny login` does: as account.authKey in Tiiny's tool's config (its other settings stay),
+    readable only by you. The panel and the tool both use it from there."""
+    cfg = read_cli_config(path)
+    acct = cfg.get("account") if isinstance(cfg.get("account"), dict) else {}
+    acct["authKey"] = key
+    cfg["account"] = acct
+    if address and not cfg.get("deviceAddress"):
+        cfg["deviceAddress"] = address
+    atomic_write(path, json.dumps(cfg, indent=2) + "\n", 0o600)
+
+
+def grant_key(info: dict, password: str) -> dict:
+    """Log in like `tiiny login` does: the device's password goes to its account service (and only there), which
+    answers with a key for this computer. Returns {"key", "user"}. Raises BadRequest when the device says no, and
+    DeviceError when it can't be reached. Unlike Tiiny's tool 0.0.6, this also works while the device is unlocked."""
+    r = device_json(dict(info, key=""), "auth", "POST", "/api/v1/account/auth", body={"password": password}, timeout=30)
+    data = r.get("json") if isinstance(r.get("json"), dict) else {}
+    key = data.get("auth_key")
+    if r.get("ok") and isinstance(key, str) and key:
+        user = data.get("user_info") if isinstance(data.get("user_info"), dict) else {}
+        return {"key": key, "user": str(user.get("user_name") or "")}
+    if r.get("status") is None:
+        raise DeviceError(r.get("error") or "Couldn't reach your Tiiny.")
+    status = str(data.get("status") or "")
+    if "activ" in status.lower():
+        raise BadRequest("This Tiiny isn't activated yet. Use Activate a new device first.")
+    if r.get("status") in (404, 405):
+        raise BadRequest(f"Your Tiiny doesn't offer this way to log in (HTTP {r['status']}). Use Tiiny's tool instead.")
+    said = next((v.strip() for v in (data.get(k) for k in ("msg", "message", "detail", "error")) if isinstance(v, str) and v.strip()), "")
+    said = said or ("" if r.get("ok") else str(r.get("error") or "")) or status
+    raise BadRequest("Your Tiiny didn't accept that password." + (f" It said: {said[:200]}" if said else ""))
+
+
+def unlock_with_key(info: dict, key: str) -> str:
+    """After a restart the device keeps its data locked until someone logs in: unlock it with the key, like
+    `tiiny login` does. Returns the data state afterwards ("unlocked", "locked", or "" if the device didn't say)."""
+    def state():
+        c = device_json(info, "auth", "POST", "/api/v1/connect", body={"auth_key": key}, timeout=15)
+        return str((c.get("json") or {}).get("data_state") or "") if isinstance(c.get("json"), dict) else ""
+    now = state()
+    if now != "locked":
+        return now
+    device_json(info, "auth", "POST", "/api/v1/account/unlock_with_auth_key", body={"auth_key": key}, timeout=60)
+    return state()
 
 
 def build_path(path, query=None) -> str:
@@ -597,6 +648,15 @@ def vault_upload(info, work_dir, name: str, data: bytes, *, finalize=True, timeo
     sid = out.get("source_id")
     indexed = None
     if sid and finalize:
-        status, _, _ = call(info, "kb", "POST", "/kb/finalize", body={"source_id": sid}, timeout=timeout)
-        indexed = 200 <= status < 300
+        status, data, _ = call(info, "kb", "POST", "/kb/finalize", body={"source_id": sid}, timeout=timeout)
+        indexed = 200 <= status < 300 and not finalize_failed(data)
     return {"source_id": sid, "filename": name, "indexed": indexed}
+
+
+def finalize_failed(data) -> str:
+    """The Tiiny can answer /kb/finalize with 200 and "success": false (Tiiny's tool checks for it since 0.0.6). Returns
+    why, or "" when it didn't say it failed (older versions don't send the flag)."""
+    if not (isinstance(data, dict) and data.get("success") is False):
+        return ""
+    said = next((v.strip() for v in (data.get(k) for k in ("message", "msg", "detail", "error")) if isinstance(v, str) and v.strip()), "")
+    return said or "Your Tiiny says indexing didn't succeed."

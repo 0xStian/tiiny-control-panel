@@ -119,6 +119,10 @@ Enter the username and password you chose when you activated the device. You get
 locks you out. The command-line tool saves an API key in `~/.local/tiiny/config.json`. The panel reads it from there,
 so you never type it into the panel.
 
+You can also log in from the panel: **Log in** asks for the password, sends it only to your Tiiny, and saves the key in
+the same place. Use that if `tiiny login` says "Already logged in" but the panel still asks you to log in: Tiiny's tool
+0.0.6 (November 2026) says that without getting a key whenever your Tiiny is already unlocked.
+
 > You can also do steps 3 and 4 inside the panel: **Network → Scan for devices**, then **Account → Log in**
 > (or **Activate a new device**). They run the same commands in a terminal inside the page.
 
@@ -909,7 +913,7 @@ to find your Tiiny.
 3. **Set up your Tiiny in the panel.** The dashboard says **Set up your device**:
    1. Press **Find my Tiiny**.
    2. Press **Use** next to its address, or type the address and press **Connect**.
-   3. Press **Log in** when it asks, and type the device's password in the terminal that opens.
+   3. Press **Log in** when it asks, and type your Tiiny's password.
 4. **Add your phone:** **System → Devices → Add a device** (with *Limited* selected), and scan the QR code.
 
 **See the address again** by running the setup command again (in the folder above `tiiny-panel`, or in it). It also

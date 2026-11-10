@@ -32,6 +32,10 @@ Only the latest release gets security fixes.
   (`--allow-commands`, below).
 - **The API key stays on the server.** It's read from the `tiiny` command-line tool's config. It's sent to the page
   only when you press **Reveal**, and it's never written to the panel's own files.
+- **Logging in sends the password only to the Tiiny.** **Log in** asks for the Tiiny's password and sends it to the
+  Tiiny's account service (`/api/v1/account/auth`), the same request `tiiny login` makes. The panel doesn't keep or log
+  it. The key the Tiiny answers with is saved where `tiiny login` keeps it, in the tool's config, readable only by you.
+  Only this computer and devices with full access can log in.
 - **Phones must be paired, and get less.** The phone listener is off by default. Each pairing link works once, for 5
   minutes. Paired devices still need the session token. Only fingerprints of their logins are stored, and you can
   remove a device at any time. Phones can't change panel settings, browse or read the computer's folders, run the

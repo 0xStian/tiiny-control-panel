@@ -92,7 +92,9 @@ download() {   # url file
   elif command -v wget >/dev/null 2>&1; then wget -qO "$2" "$1"
   else fail "Neither curl nor wget is installed, so compose.yaml can't be downloaded."; fi
 }
+NEW=0   # a new setup (no compose.yaml here yet) gets the newest image
 if [ ! -f compose.yaml ]; then
+  NEW=1
   if [ -n "$SRC" ]; then cp "$SRC/compose.yaml" compose.yaml; else download "$RAW/compose.yaml" compose.yaml; fi
 fi
 # the image and the container's name, as compose.yaml has them (a version can be pinned there, like ...:1.4)
@@ -146,10 +148,18 @@ there first (${SUDO:+sudo }docker compose down), then run this again."
 fi
 
 # -- the image ------------------------------------------------------------------------------------------------------
+# An image a release made carries its version. One without it was built on this machine (an old test build, say), so
+# it's not the published panel and gets replaced.
+released() {
+  case "$($SUDO docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE" 2>/dev/null)" in
+    [0-9]*) return 0 ;;
+  esac
+  return 1
+}
 if [ "$MODE" = build ]; then
   step "Building the panel's image from $SRC (a minute or two the first time)…"
   $SUDO docker build -q -t "$IMAGE" "$SRC" >/dev/null || fail "The image didn't build (see the messages above)."
-elif [ "$UPDATE" = 1 ] || ! $SUDO docker image inspect "$IMAGE" >/dev/null 2>&1; then
+elif [ "$UPDATE" = 1 ] || [ "$NEW" = 1 ] || ! released; then
   step "Downloading the panel's image…"
   $COMPOSE pull --quiet || fail "Couldn't download the image (see the messages above)."
 fi
@@ -192,7 +202,10 @@ fi
 
 # -- where to go ----------------------------------------------------------------------------------------------------
 printf '\n'
-$SUDO docker exec "$NAME" tiiny-panel info || true
+if ! $SUDO docker exec "$NAME" tiiny-panel info 2>/dev/null; then   # (an image from before 1.4.0 has no info)
+  say "Couldn't ask the panel where to open it. When it started, it said:"
+  $SUDO docker logs "$NAME" 2>&1 | awk '/^Tiiny Control Panel/ { b = "" } { b = b "  " $0 "\n" } /^Press Ctrl\+C/ { last = b } END { printf "%s", last }'
+fi
 fw=""
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
   fw="sudo firewall-cmd --add-port=$port/tcp --permanent && sudo firewall-cmd --reload"

@@ -1,7 +1,7 @@
 """TiinyOS updates through the device's own upgrade service (the "v2" API that its upgrade dashboard uses).
 
-The tiiny CLI's `upgrade` command still calls the old /api/upgrade/check, which newer devices no longer have
-(it fails with HTTP 404 on TiinyOS 0.1.38), so the panel checks for and installs updates itself:
+Before Tiiny's tool 0.0.6, its `upgrade` command only called the old /api/upgrade/check, which newer devices no longer
+have (HTTP 404 on TiinyOS 0.1.38); 0.0.6 uses this API too. The panel checks for and installs updates itself:
   GET  /api/v2/versions           the running version and the offered ones, with release notes
   POST /api/v2/versions/refresh   ask Tiiny's update server again
   GET  /api/v2/device             whether an update may start, and whether a restart is needed to finish one

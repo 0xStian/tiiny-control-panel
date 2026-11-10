@@ -356,7 +356,7 @@ FILE_CSP = "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self';
 RISKY_MIME = ("text/html", "image/svg+xml", "application/xhtml+xml", "text/xml", "application/xml")
 # What paired phones may not do: change the panel, browse or read this computer's files, run the tiiny CLI
 # (it takes file paths), see the API key. They control the device and use the panel's features.
-LAN_FORBIDDEN = ("/api/lan", "/api/shutdown", "/api/launcher", "/api/settings", "/api/device/key", "/api/fs/",
+LAN_FORBIDDEN = ("/api/lan", "/api/shutdown", "/api/launcher", "/api/settings", "/api/device/key", "/api/device/login", "/api/fs/",
                  "/api/cli", "/api/pty", "/api/session", "/api/commands", "/api/files/", "/api/update", "/api/backup",
                  "/api/apps", "/api/gateway")
 # Settings that decide which program the panel runs; only changeable when starting it (--tiiny, --cli-config).
@@ -381,6 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         ("GET", r"/api/health", "api_health"),
         ("POST", r"/api/settings", "api_settings"),
         ("GET", r"/api/device/key", "api_device_key"),
+        ("POST", r"/api/device/login", "api_device_login"),
         ("GET", r"/api/overview", "api_overview"),
         ("POST", r"/api/decide", "api_decide"),
         ("GET", r"/api/firmware", "api_firmware"),
@@ -979,6 +980,33 @@ class Handler(BaseHTTPRequestHandler):
     def api_device_key(self, q):
         info = DEVCONN.resolve()
         self.send_json(200, {"key": info["key"], "address": info["address"], "port": info["port"]})
+
+    def api_device_login(self, q):
+        """Log in to the device with its password, like `tiiny login` (device.grant_key): the password goes only to
+        the device, and the key it answers with is kept in Tiiny's tool's config, where the panel and the tool read it.
+        This works whatever version of the tool is installed (its 0.0.6 says "Already logged in" without getting a key
+        while the device is unlocked). Only this computer and devices with full access can do this (LAN_FORBIDDEN)."""
+        body = self.read_json()
+        password = body.get("password")
+        if not isinstance(password, str) or not password or len(password) > 256:
+            raise BadRequest("Type your Tiiny's password.")
+        info = DEVCONN.resolve()
+        if not info["address"]:
+            raise BadRequest("No Tiiny is set up yet. Find it under Network first.")
+        try:
+            got = device.grant_key(info, password)
+        except DeviceError as e:
+            return self.send_json(502, {"error": str(e)})
+        finally:
+            password = body = None
+        path = DEVCONN.cli_config_path()
+        try:
+            device.save_cli_key(path, got["key"], info["address"])
+        except OSError as e:
+            return self.send_json(500, {"error": f"Logged in, but the key couldn't be saved in {path} ({e.strerror or e})."})
+        if SETTINGS.get("api_key"):   # a key typed under System → Settings would still win over the new one
+            SETTINGS.update({"api_key": ""})
+        self.send_json(200, {"ok": True, "user": got["user"], "data_state": device.unlock_with_key(DEVCONN.resolve(), got["key"])})
 
     def api_discover(self, q):
         info = DEVCONN.resolve()
