@@ -40,6 +40,7 @@ access. To build and run the **Docker image** from your copy:
 | Path | What's there |
 |---|---|
 | `tiiny_ui.py` | The web server: routes (the `ROUTES` table), security checks, the device proxy, start-up. |
+| `tiinyui/httpbody.py` | Request bodies for the web server and the gateway: sent with a Content-Length or in chunks (`Transfer-Encoding: chunked`), read strictly and within size limits. A connection that carried chunks closes after its answer, and an answer before a close says `Connection: close`. |
 | `tiinyui/device.py` | Talking to the device's HTTP API (`device_open`, `call`, `chat`, `ensure_loaded`, …). |
 | `tiinyui/clitools.py`, `tiinyui/pty.py` | Running the `tiiny` command-line tool, including in a real terminal. |
 | `tiinyui/store.py`, `tiinyui/jobs.py` | Saved data (JSON files in `~/.local/share/tiiny-ui/`) and background jobs. |

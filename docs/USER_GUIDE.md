@@ -628,11 +628,13 @@ with its own key. Cloud services can't reach your Tiiny.
      its key, shown only this once, with the app's setup filled in.
    - **Each app** shows when it was last used, how much, and what it may use. **Setup** shows its setup again (with a
      placeholder for the key). Its **⋮** menu edits it, makes a new key, or revokes it.
-   - **Apps on other computers in your network:** off unless you switch it on. Without `--tls-cert` and `--tls-key`, keys
-     travel unencrypted through your network.
+   - **Apps on other computers in your network:** off unless you switch it on. Apps use the address shown, or the
+     address and port they reach it by through port mapping or NAT. Names work only in server mode, the same ones as
+     for the panel. Without `--tls-cert` and `--tls-key`, keys travel unencrypted through your network.
    - **Ollama apps without a key:** for Ollama apps that can't send one. Only chat and embeddings, only from this computer.
 2. **Test the APIs:** checks the device's OpenAI, Anthropic and Ollama APIs and decision models with one click each.
-3. **Ready-to-copy setups**, filled in with the gateway's address:
+3. **Ready-to-copy setups**, filled in with the gateway's address (opened from another computer, with the address you
+   reached the panel by and the gateway's port):
    - **AI assistants (MCP):** Claude Code, Claude Desktop, Cursor.
    - **Agents:** OpenClaw, Hermes Agent.
    - **Code:** OpenAI SDK (Python, JavaScript), curl, Anthropic SDK, Ollama, LangChain, LlamaIndex.
@@ -1045,7 +1047,8 @@ Give full access to your own computers. *Limited* is what a paired phone gets on
   without `:ro`.
 - **USB-C:** plug your Tiiny into the server. The container uses the server's network, so it reaches it.
 - **Apps on other computers:** the gateway answers on the server itself (port 8766). To let apps on your laptop use
-  it, switch on **Apps on other computers in your network** under **Integrations**.
+  it, switch on **Apps on other computers in your network** under **Integrations**. They can then use the server's IP
+  address or a name the panel answers, like `http://nas.local:8766`.
 - **Backups:** **System → Download a backup**, or copy `./tiiny-data` while the container is stopped.
 
 ### If something doesn't work on a server
@@ -1062,7 +1065,8 @@ Give full access to your own computers. *Limited* is what a paired phone gets on
 - **The setup command says the panel already runs from another folder.** Only one panel container can run. Run the
   command in that folder, or stop it there with `docker compose down`.
 - **"This device isn't signed in".** Make a link with `pair` (see above), or with **Add a device** on a signed-in one.
-- **"Forbidden host" when you use a name.** Add the name to `TIINY_UI_PUBLIC_NAMES`, and restart the panel.
+- **"Forbidden host" when you use a name.** Add the name to `TIINY_UI_PUBLIC_NAMES`, and restart the panel. That also
+  covers apps that use the gateway.
 - **Settings don't save, or the log says "Permission denied".** `./tiiny-data` must be writable for `PUID` and `PGID`.
   On a network share that doesn't allow changing owners, set them to the folder's owner. On Fedora and other systems
   with SELinux, keep the `:z` at the end of the `./tiiny-data:/data:z` line.

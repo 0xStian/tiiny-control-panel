@@ -5,6 +5,46 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-11-13
+
+### Changed
+
+- **The setups on Integrations use an address that works from where you are.** Opened from another computer while
+  **Apps on other computers in your network** is on, they use the address you reached the panel by, with the
+  gateway's port, and that's also the address shown for the listener. Before, they always said `127.0.0.1:8766`,
+  which is right only for apps on the computer that runs the panel.
+
+### Fixed
+
+- **Requests sent in chunks are read in full** ([#4](https://github.com/0xStian/tiiny-control-panel/issues/4)). Some
+  reverse proxies and other clients pass a request's body on in chunks, without saying how long it is
+  (`Transfer-Encoding: chunked`).
+  - **What happened:** the panel only read bodies that came with a length, so it took a chunked one as empty. Behind
+    such a proxy, settings weren't saved although the panel answered OK, Log in asked for the password you had just
+    typed, and the setup code was turned down as wrong. Uploads and the gateway for apps refused chunked requests. And
+    what was left of a body could break the next request on the same connection.
+  - **Now:** the panel and the gateway read chunked bodies wherever they read a body, with the same size limits.
+    Broken chunks are refused. A connection that carried chunks is closed after the answer, and the answer says so, so
+    a proxy doesn't reuse it. The same goes for a request whose body the endpoint had no use for: before, what was
+    left of such a body was read as the start of the next request on that connection, which behind a proxy that
+    shares its connections can be someone else's.
+- **Apps on other computers reach the gateway through port mapping and NAT**
+  ([#5](https://github.com/0xStian/tiiny-control-panel/issues/5)).
+  - **What happened:** the gateway's listener for other computers only answered requests addressed to the one network
+    address it listens on. Apps that reach it by another address got "403 Forbidden host": through a container's
+    mapped port, a VM's NAT, a forwarded port or an SSH tunnel.
+  - **Now:** it answers any IP address, with any port, like the panel in server mode. In server mode it also answers
+    the names the panel answers (the server's own name and `TIINY_UI_PUBLIC_NAMES`), so apps can use
+    `http://nas.local:8766`. Other names are still refused, against DNS rebinding, and the answer says what to use
+    instead. Every request still needs an app key, and the listener on `127.0.0.1` hasn't changed.
+
+### Security
+
+- **Idle connections to the panel are closed after two minutes,** as the gateway's already were. Connections opened
+  and left unused (by a stuck client, or on purpose) no longer hold a thread each for as long as the client likes.
+  Answers, streams and uploads can still take as long as they need.
+- **The gateway's answers say `X-Content-Type-Options: nosniff`,** like the panel's.
+
 ## [1.4.2] - 2026-11-13
 
 ### Fixed
@@ -325,7 +365,8 @@ The first public release.
 - **A safer subset for phones.** No panel settings, terminals, folder browsing, local folders in reviews and projects,
   API key, or fetching local-network addresses.
 
-[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.3...HEAD
+[1.4.3]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.3.0...v1.4.0

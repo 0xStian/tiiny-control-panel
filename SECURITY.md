@@ -87,7 +87,9 @@ Only the latest release gets security fixes.
     model that isn't loaded, its loading policy decides: by default the model is loaded only if it fits, and nothing is
     unloaded for it.
   - **The device's key stays on the server.** Apps no longer need it.
-  - **Other computers:** a second listener on your network address is off unless you switch it on. Without
+  - **Other computers:** a second listener on your network address is off unless you switch it on. Its requests may
+    name any IP address in `Host` (port mapping and NAT, as for a container or a VM, change the address an app
+    connects to), or in server mode a name the panel answers. Other names are refused, against DNS rebinding. Without
     `--tls-cert` it uses plain HTTP, so keys travel unencrypted through your network. Ollama apps that can't send a key
     can be allowed, but only from this computer, and only for chat and embeddings.
   - **Who can manage apps:** only this computer; phones can't.
@@ -108,6 +110,8 @@ Only the latest release gets security fixes.
     pages (`Origin`), and wrong codes count toward the same pause.
   - **No trust by address.** Requests from the server itself (like a reverse proxy's) must sign in too, and the
     `127.0.0.1` sign-in links and `POST /api/session` aren't served in server mode.
+  - **Idle connections are closed** after two minutes (the gateway's too), so connections that are opened and left
+    unused can't hold the panel's threads. An answer, a stream or an upload can take as long as it needs.
   - **Sessions:** an `HttpOnly`, `SameSite=Lax` cookie (also `Secure` when it's set over HTTPS, or behind a proxy that
     says the browser used HTTPS), plus the page's session token, which is new every time the panel starts. Only
     fingerprints of the cookies are stored. A removed device is signed out at once.
@@ -116,7 +120,8 @@ Only the latest release gets security fixes.
     terminal, or allow commands and file changes.
   - **Against DNS rebinding,** only IP addresses, the server's own name (`nas` and `nas.local`, which only resolve on
     the local network) and the names listed in `--public-name` (`TIINY_UI_PUBLIC_NAMES`) are answered, and requests
-    that change something must come from such an origin.
+    that change something must come from such an origin. The gateway's listener for other computers answers the same
+    addresses and names.
   - **HTTPS by default:** with your certificate (`--tls-cert`, `--tls-key`), or else one the panel makes itself (below).
     `TIINY_UI_TLS=off` (`--no-tls`) switches to plain HTTP.
 - **The panel's own certificate** (`tiinyui/tlscert.py`) is for server mode and the phone listener when you don't give
