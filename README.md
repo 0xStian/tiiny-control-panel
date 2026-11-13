@@ -97,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/0xStian/tiiny-control-panel/main/do
 It ends like this (with your server's address):
 
 ```
-Tiiny Control Panel 1.4.1 is running.
+Tiiny Control Panel 1.4.2 is running.
   Open        https://192.168.1.20:8765/   (or https://nas.local:8765)
   Setup code  K7QM-2XWD
   Your browser warns once: the panel made its own certificate. Choose Advanced, then Continue.

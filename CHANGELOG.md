@@ -5,6 +5,34 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-13
+
+### Fixed
+
+- **Studio → 3D works with Hunyuan3D-2.1** ([#1](https://github.com/0xStian/tiiny-control-panel/issues/1)). It stopped
+  after a few minutes with "The simplify step needs mesh, which an earlier step didn't produce."
+  - **The cause:** the 3D steps were only tested with TRELLIS.2. Hunyuan3D-2.1 labels its meshes `mesh_glb` instead of
+    `shape` as Tiiny's docs say, so the panel didn't recognise the shape it had just made.
+  - **Also fixed for Hunyuan3D-2.1:**
+    - **The texture step no longer gets stuck** at "Painting the texture (0%)". Once that step is done, Hunyuan3D's
+      answer about it is over 64 MB, more than the panel read. The panel now reads only the start of such answers and
+      asks for the list of files separately.
+    - **Quality and Seed reach your Tiiny.** Before, every step ran with the model's defaults.
+    - **Turning off Paint a texture** now gives you the simplified mesh. Before, it gave the unsimplified one, or "didn't
+      return a 3D model file" with Simplify off too.
+  - **With both 3D models loaded, a job runs on the one you chose.** Your Tiiny sends 3D requests that don't name a
+    model to just one of them, and which one can change during a job. So after you'd tried both, a TRELLIS.2 job could
+    run on Hunyuan3D-2.1 and stop with "Image-to-3D task not found", or the other way round. The panel now names the
+    model in every request.
+  - **An empty Seed box now really means random,** for every 3D model. Hunyuan3D's own default seed is always the same,
+    so the same picture gave the same model every time. The gallery shows the seed used, so you can make a result again.
+  - **If a step still can't find what it needs,** the error lists the files your Tiiny returned, so a report shows why.
+- **OCR says plainly when your Tiiny can't read text with a model.**
+  - **The cause:** TiinyOS 0.1.39 loads GLM-OCR, but answers every OCR request for it with "Endpoint not found". Tiiny's
+    own `tiiny run ocr` gets the same error, so it needs a fix from Tiiny.
+  - **What the panel says:** the Playground and the OCR tool for apps explain that, instead of the bare error.
+  - **Ready for Tiiny's fix:** the panel now sends the model in the request body too, the way Tiiny's tool does.
+
 ## [1.4.1] - 2026-11-10
 
 ### Changed
@@ -297,7 +325,8 @@ The first public release.
 - **A safer subset for phones.** No panel settings, terminals, folder browsing, local folders in reviews and projects,
   API key, or fetching local-network addresses.
 
-[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.2.0...v1.3.0

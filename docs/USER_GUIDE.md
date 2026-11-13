@@ -551,7 +551,9 @@ Longer creative work. It runs on the panel's server, so you can close the tab an
 6. **Result** and your recent songs.
 
 **3D** turns a picture into a textured 3D model (a GLB file) in five steps on the device. It takes about 8 minutes at
-*Fast*, and you can pause or cancel. You can turn the result around in the page.
+*Fast*, and you can pause or cancel. You can turn the result around in the page. It works with both 3D models in the
+model store, TRELLIS.2 and Hunyuan3D-2.1. Leave **Seed** empty for a new variation each time; the gallery shows the seed
+each model was made with, so you can make it again.
 
 **The background.** With **Background: Cut it out (AI)**, the object is cut out of your picture before the 3D steps, so
 the background doesn't end up in the model:
