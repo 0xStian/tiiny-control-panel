@@ -7,6 +7,7 @@
 #
 # Builds:
 #   macOS (Apple Silicon)  -> .app, zipped        (ad-hoc signed, like the local build)
+#   macOS (Intel)          -> .app, zipped
 #   Linux x86_64           -> AppImage
 #   Linux aarch64          -> AppImage
 #
@@ -42,7 +43,7 @@ env:
 jobs:
   macos-aarch64:
     name: macOS app (Apple Silicon)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -79,6 +80,47 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_NAME }}
           files: ${{ github.workspace }}/Tiiny-Control-Panel-macOS-arm64.zip
+          fail_on_unmatched: false
+
+  macos-x86_64:
+    name: macOS app (Intel)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+          echo "source $HOME/.cargo/env" >> "$GITHUB_ENV"
+
+      - name: Install the Tauri CLI
+        run: npm i -g @tauri-apps/cli@2.12.6
+
+      - name: Freeze the panel into a sidecar
+        run: |
+          python3 -m venv .venv-ci
+          .venv-ci/bin/pip install -q pyinstaller
+          .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
+            --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
+          chmod +x dist/tiiny-panel
+          cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
+
+      - name: Build the app
+        working-directory: app
+        run: tauri build --bundles app
+
+      - name: Package the .app as a zip
+        run: |
+          cd app/target/release/bundle/macos
+          zip -ry ../../Tiiny-Control-Panel-macOS-x86_64.zip "Tiiny Control Panel.app"
+
+      - name: Publish to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_NAME }}
+          files: ${{ github.workspace }}/Tiiny-Control-Panel-macOS-x86_64.zip
           fail_on_unmatched: false
 
   linux-x86_64:
