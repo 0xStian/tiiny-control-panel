@@ -66,15 +66,18 @@ fn find_command(exe_dir: &Path) -> Option<(String, Vec<String>)> {
         "x86_64" => "x86_64-apple-darwin",
         _ => return None, // a Windows build comes later (the panel needs a Unix terminal)
     };
-    let name = format!("tiiny-panel-{triple}");
+    // The bundler keeps the base name next to the executable; other layouts may keep the triple suffix.
+    let names = [String::from("tiiny-panel"), format!("tiiny-panel-{triple}")];
     let mut bases = vec![exe_dir.to_path_buf()];
     if let Some(parent) = exe_dir.parent() {
         bases.push(parent.join("Resources"));
     }
-    for base in bases {
-        let p = base.join(&name);
-        if p.is_file() {
-            return Some((p.to_string_lossy().into_owned(), vec!["--no-browser".into()]));
+    for name in &names {
+        for base in &bases {
+            let p = base.join(name);
+            if p.is_file() {
+                return Some((p.to_string_lossy().into_owned(), vec!["--no-browser".into()]));
+            }
         }
     }
     // Dev fallback: system Python + the panel's sources next to this crate.
