@@ -15,6 +15,24 @@ How it works:
 - Closing the app stops the server **only if the app started it**. A copy you
   started in a terminal keeps running, and the two coexist.
 
+## Download a prebuilt app
+
+GitHub Actions (`.github/workflows/app.yml`) builds the app on every push and
+publishes it on the repository's [Releases](https://github.com/0xStian/tiiny-control-panel/releases) page:
+
+- **macOS (Apple Silicon):** `Tiiny-Control-Panel-macOS-arm64.zip` — unzip,
+  then open (right-click → Open the first time).
+- **Linux:** `…-Linux-x86_64.AppImage` or `…-Linux-aarch64.AppImage` —
+  `chmod +x` it, then run it.
+
+Every push updates a rolling "Latest from \<branch\>" release; pushing a `v*`
+tag adds the same assets to that version's release, next to the Docker image.
+Builds are ad-hoc signed, like an app you build yourself.
+
+The app opens a window, so it wants a screen: on a headless machine use the
+browser or the Docker install instead. Downloads cover Apple Silicon — an
+Intel Mac can build its own with the recipe below.
+
 ## What you need
 
 - macOS (Apple Silicon or Intel), Xcode Command Line Tools, Rust
@@ -52,6 +70,11 @@ The finished app is `target/release/bundle/macos/Tiiny Control Panel.app`.
 > The app is built, not code-signed: first launch on a *downloaded* copy needs
 > right-click → Open (or `xattr -cr "/Applications/Tiiny Control Panel.app"`).
 > A copy you built yourself just opens.
+
+The same steps run in GitHub Actions on every push — the workflow swaps
+`brew install rust` for rustup, pins the Tauri CLI version, and on Linux adds
+the system libraries a window needs, then bundles to AppImage instead of
+`.app`. That's how the prebuilt apps above are made.
 
 ## Notes and limits
 
