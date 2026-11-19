@@ -27,6 +27,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -193,6 +194,9 @@ CONTAINER_UPDATE = "docker compose pull && docker compose up -d"
 def install_kind():
     """How this copy can be updated: ("git", ""), ("zip", ""), ("container", the commands that update the image),
     or ("manual", why it can't do it by itself)."""
+    if getattr(sys, "frozen", False):   # the desktop app (a frozen build): a new release is the update
+        return "manual", (f"This is the app build; it updates by downloading a new release from "
+                          f"https://github.com/{REPO}/releases and opening it. Your data stays exactly where it is.")
     if os.environ.get("TIINY_UI_CONTAINER", "").strip().lower() in ("1", "true", "yes", "on"):
         return "container", CONTAINER_UPDATE
     if (APP_DIR / ".git").exists():
