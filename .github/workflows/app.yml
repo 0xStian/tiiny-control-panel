@@ -38,7 +38,8 @@ env:
   # a rolling "latest" release (action-gh-release creates the tag if new and
   # moves it forward on later pushes; files with the same name are replaced).
   RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('app-latest-{0}', github.ref_name) }}
-  RELEASE_NAME: ${{ startsWith(github.ref, 'refs/tags/') && format('Tiiny Control Panel {0} — desktop apps', trimStart(github.ref_name, 'v')) || format('Latest from {0} (build {1})', github.ref_name, github.run_number) }}
+  # RELEASE_NAME is computed per job (a small shell step): the expression
+  # library has no substring/trim functions to strip the tag's "v".
 
 jobs:
   macos-aarch64:
@@ -73,6 +74,15 @@ jobs:
         run: |
           cd app/target/release/bundle/macos
           zip -ry ../../Tiiny-Control-Panel-macOS-arm64.zip "Tiiny Control Panel.app"
+
+      - name: Compute the release name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"; ver="${ver#v}"
+            echo "RELEASE_NAME: Tiiny Control Panel $ver — desktop apps" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_NAME: Latest from $GITHUB_REF_NAME (build $GITHUB_RUN_NUMBER)" >> "$GITHUB_ENV"
+          fi
 
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
@@ -114,6 +124,15 @@ jobs:
         run: |
           cd app/target/release/bundle/macos
           zip -ry ../../Tiiny-Control-Panel-macOS-x86_64.zip "Tiiny Control Panel.app"
+
+      - name: Compute the release name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"; ver="${ver#v}"
+            echo "RELEASE_NAME: Tiiny Control Panel $ver — desktop apps" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_NAME: Latest from $GITHUB_REF_NAME (build $GITHUB_RUN_NUMBER)" >> "$GITHUB_ENV"
+          fi
 
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
@@ -163,6 +182,15 @@ jobs:
         run: |
           echo "APPIMAGE: $(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
 
+      - name: Compute the release name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"; ver="${ver#v}"
+            echo "RELEASE_NAME: Tiiny Control Panel $ver — desktop apps" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_NAME: Latest from $GITHUB_REF_NAME (build $GITHUB_RUN_NUMBER)" >> "$GITHUB_ENV"
+          fi
+
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
         with:
@@ -210,6 +238,15 @@ jobs:
       - name: Locate the AppImage
         run: |
           echo "APPIMAGE: $(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
+
+      - name: Compute the release name
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"; ver="${ver#v}"
+            echo "RELEASE_NAME: Tiiny Control Panel $ver — desktop apps" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_NAME: Latest from $GITHUB_REF_NAME (build $GITHUB_RUN_NUMBER)" >> "$GITHUB_ENV"
+          fi
 
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
