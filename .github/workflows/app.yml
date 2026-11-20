@@ -172,7 +172,7 @@ jobs:
           for f in app/target/release/bundle/appimage/*.AppImage; do
             mv "$f" "${f// /-}"
           done
-          echo "APPIMAGE: $(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
+          echo "APPIMAGE=$(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
 
       - name: Publish to the release
         uses: softprops/action-gh-release@v3
@@ -226,7 +226,7 @@ jobs:
           for f in app/target/release/bundle/appimage/*.AppImage; do
             mv "$f" "${f// /-}"
           done
-          echo "APPIMAGE: $(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
+          echo "APPIMAGE=$(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
 
       - name: Publish to the release
         uses: softprops/action-gh-release@v3
