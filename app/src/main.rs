@@ -60,23 +60,43 @@ fn which(cmd: &str) -> Option<String> {
 /// The panel server: the bundled frozen sidecar if it's there, otherwise a
 /// system Python with the panel's sources (a dev convenience, so `tauri dev`
 /// works before the freeze step in the README has been run).
-fn find_command(exe_dir: &Path) -> Option<(String, Vec<String>)> {
-    let triple = match std::env::consts::ARCH {
-        "aarch64" => "aarch64-apple-darwin",
-        "x86_64" => "x86_64-apple-darwin",
-        _ => return None, // a Windows build comes later (the panel needs a Unix terminal)
+///
+/// Where the sidecar lives differs by platform: the macOS bundle keeps it
+/// beside the executable (Contents/MacOS), the Linux AppImage keeps it beside
+/// the main binary inside the image (usr/bin). Probe each known home, with and
+/// without the target-triple suffix. On failure, hand back the paths that were
+/// searched so the error message can show them.
+fn find_command(exe_dir: &Path, res_dir: Option<&Path>) -> Result<(String, Vec<String>), Vec<String>> {
+    let arch = std::env::consts::ARCH;
+    let triple = match std::env::consts::OS {
+        "macos" => format!("{arch}-apple-darwin"),
+        "linux" => format!("{arch}-unknown-linux-gnu"),
+        "windows" => format!("{arch}-pc-windows-msvc"),
+        _ => String::new(),
     };
-    // The bundler keeps the base name next to the executable; other layouts may keep the triple suffix.
-    let names = [String::from("tiiny-panel"), format!("tiiny-panel-{triple}")];
-    let mut bases = vec![exe_dir.to_path_buf()];
-    if let Some(parent) = exe_dir.parent() {
-        bases.push(parent.join("Resources"));
+    let names: Vec<String> = std::iter::once("tiiny-panel".to_string())
+        .chain(std::iter::once(triple))
+        .filter(|n| !n.is_empty())
+        .collect();
+    // Candidate homes, most likely first: beside the executable, in the
+    // bundle's resources dir, in Contents/Resources (macOS).
+    let mut bases: Vec<PathBuf> = vec![exe_dir.to_path_buf()];
+    if let Some(r) = res_dir.filter(|r| !bases.iter().any(|b| b == r)) {
+        bases.push(r.to_path_buf());
     }
+    if let Some(parent) = exe_dir.parent() {
+        let extra = parent.join("Resources");
+        if !bases.iter().any(|b| b == &extra) {
+            bases.push(extra);
+        }
+    }
+    let mut searched = Vec::new();
     for name in &names {
         for base in &bases {
             let p = base.join(name);
+            searched.push(p.display().to_string());
             if p.is_file() {
-                return Some((p.to_string_lossy().into_owned(), vec!["--no-browser".into()]));
+                return Ok((p.to_string_lossy().into_owned(), vec!["--no-browser".into()]));
             }
         }
     }
@@ -86,16 +106,19 @@ fn find_command(exe_dir: &Path) -> Option<(String, Vec<String>)> {
             .iter()
             .find(|p| Path::new(p).is_file())
             .map(|s| (*s).to_string())
-    })?;
+    });
+    let py = py.ok_or_else(|| searched.clone())?;
     let panel_dir = match std::env::var("TIINY_PANEL_DIR") {
         Ok(dir) => PathBuf::from(dir),
-        Err(_) => Path::new(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize().ok()?,
+        Err(_) => {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize().ok().ok_or_else(|| searched.clone())?
+        }
     };
     let script = panel_dir.join("tiiny_ui.py");
     if !script.is_file() {
-        return None;
+        return Err(searched);
     }
-    Some((py, vec![script.to_string_lossy().into_owned(), "--no-browser".into()]))
+    Ok((py, vec![script.to_string_lossy().into_owned(), "--no-browser".into()]))
 }
 
 /// The panel prints its sign-in link at start-up — on a `sign in   :` line for
@@ -190,19 +213,36 @@ fn start_panel(app: &tauri::AppHandle, win: &WebviewWindow) {
     // If a panel is already serving on one of its ports, the sidecar signs into
     // that one and exits — the app never starts a second copy.
 
-    let exe_dir = match app.path().executable_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            fail(win, &format!("Can't find the app's own folder: {e}"));
+    // Where the sidecar lives: beside the running binary. (Tauri's
+    // `executable_dir()` is the wrong question on Linux — it resolves the
+    // user's ~/.local/bin — and unsupported on macOS, so ask the OS.)
+    let exe_dir = match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        Some(d) => d,
+        None => {
+            fail(win, "Can't start the panel: the app can't even locate its own binary, \
+                       so it can't find the sidecar beside it.");
             return;
         }
     };
-    let (bin, args) = match find_command(&exe_dir) {
-        Some(c) => c,
-        None => {
-            fail(win, "Can't start the panel: this app ships it as the `tiiny-panel` sidecar next to the app \
-                       binary. Rebuild it (app/README.md, step 2), or run the panel from a terminal and \
-                       `cargo tauri dev` with TIINY_PANEL_DIR set to a clone of the panel.");
+    let res_dir = app.path().resource_dir().ok();
+    let (bin, args) = match find_command(&exe_dir, res_dir.as_deref()) {
+        Ok(c) => c,
+        Err(searched) => {
+            let msg = format!(
+                "Can't start the panel: this app ships it as the `tiiny-panel` sidecar, \
+                 but there's no copy here (and no dev copy to fall back on).\n\
+                 Looked in:\n  {searched}\n\
+                 A fresh build from the releases page always carries it — if a new one \
+                 still doesn't, that's a packaging bug worth reporting.",
+                searched = searched.join("\n  ")
+            );
+            if let Some(p) = &log {
+                if let Some(dir) = p.parent() {
+                    let _ = fs::create_dir_all(dir);
+                }
+                let _ = OpenOptions::new().create(true).append(true).open(p).and_then(|mut f| writeln!(f, "{msg}"));
+            }
+            fail(win, &msg);
             return;
         }
     };

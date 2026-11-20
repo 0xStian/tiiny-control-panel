@@ -92,7 +92,8 @@ a menu-bar icon. It's the same panel — same pages, same data, same sign-in.
 
 Prebuilt apps are in the [releases](https://github.com/0xStian/tiiny-control-panel/releases):
 macOS (Apple Silicon and Intel) as zips, Linux as AppImages for x86-64 and
-64-bit ARM. Every push updates a "Latest" release; a version tag adds the
+64-bit ARM (the Linux builds target Ubuntu 24.04, so a fairly recent distro —
+roughly 2024 or newer — is needed to run them). Every push updates a "Latest" release; a version tag adds the
 assets to that version's release, next to the Docker image.
 
 The app opens a window, so it wants a screen — on a headless machine use the
