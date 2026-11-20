@@ -6,10 +6,13 @@
 #   release, next to the Docker/source release this repo already publishes
 #
 # Builds:
-#   macOS (Apple Silicon)  -> .app, zipped        (ad-hoc signed, like the local build)
-#   macOS (Intel)          -> .app, zipped
 #   Linux x86_64           -> AppImage
 #   Linux aarch64          -> AppImage
+#
+# macOS is not built in CI for now: the public Apple Silicon runner pool has
+# been flaky (a job can sit a long time without a runner and get cancelled),
+# and the builds are unsigned. The app code is platform-neutral, so adding
+# macOS back is two jobs of this same shape.
 #
 # Each platform freezes the panel into a self-contained PyInstaller sidecar
 # first (the app shell spawns it); PyInstaller cannot cross-compile, so the
@@ -44,90 +47,6 @@ env:
   # hyphenated names before being recorded there.
 
 jobs:
-  macos-aarch64:
-    name: macOS app (Apple Silicon)
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Install the Tauri CLI
-        run: npm i -g @tauri-apps/cli@2.12.6
-
-      - name: Freeze the panel into a sidecar
-        run: |
-          python3 -m venv .venv-ci
-          .venv-ci/bin/pip install -q pyinstaller
-          .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
-            --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
-          chmod +x dist/tiiny-panel
-          mkdir -p app/binaries
-          cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
-
-      - name: Build the app
-        working-directory: app
-        run: tauri build --bundles app
-
-      - name: Package the .app as a zip
-        run: |
-          cd app/target/release/bundle/macos
-          zip -ry "${GITHUB_WORKSPACE}/Tiiny-Control-Panel-macOS-arm64.zip" "Tiiny Control Panel.app"
-
-      - name: Publish to the release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Tiiny Control Panel {0} — desktop apps', github.ref_name) || format('Latest from {0} (build {1})', github.ref_name, github.run_number) }}
-          files: ${{ github.workspace }}/Tiiny-Control-Panel-macOS-arm64.zip
-          fail_on_unmatched: true
-
-  macos-x86_64:
-    name: macOS app (Intel)
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Install the Tauri CLI
-        run: npm i -g @tauri-apps/cli@2.12.6
-
-      - name: Freeze the panel into a sidecar
-        run: |
-          python3 -m venv .venv-ci
-          .venv-ci/bin/pip install -q pyinstaller
-          .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
-            --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
-          chmod +x dist/tiiny-panel
-          mkdir -p app/binaries
-          cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
-
-      - name: Build the app
-        working-directory: app
-        run: tauri build --bundles app
-
-      - name: Package the .app as a zip
-        run: |
-          cd app/target/release/bundle/macos
-          zip -ry "${GITHUB_WORKSPACE}/Tiiny-Control-Panel-macOS-x86_64.zip" "Tiiny Control Panel.app"
-
-      - name: Publish to the release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Tiiny Control Panel {0} — desktop apps', github.ref_name) || format('Latest from {0} (build {1})', github.ref_name, github.run_number) }}
-          files: ${{ github.workspace }}/Tiiny-Control-Panel-macOS-x86_64.zip
-          fail_on_unmatched: true
-
   linux-x86_64:
     name: Linux AppImage (x86_64)
     runs-on: ubuntu-24.04

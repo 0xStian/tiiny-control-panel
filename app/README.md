@@ -20,15 +20,13 @@ How it works:
 GitHub Actions (`.github/workflows/app.yml`) builds the app on every push and
 publishes it on the repository's [Releases](https://github.com/0xStian/tiiny-control-panel/releases) page:
 
-- **macOS:** `Tiiny-Control-Panel-macOS-arm64.zip` (Apple Silicon) or
-  `Tiiny-Control-Panel-macOS-x86_64.zip` (Intel) — unzip, then open
-  (right-click → Open the first time).
 - **Linux:** `Tiiny-Control-Panel_<version>_amd64.AppImage` (x86-64) or
-  `…_aarch64.AppImage` (64-bit ARM) — `chmod +x` it, then run it.
+  `…_aarch64.AppImage` (64-bit ARM) — `chmod +x` it, then run it. The builds
+  target Ubuntu 24.04, so a fairly recent distro (roughly 2024 or newer) is
+  needed to run them.
 
 Every push updates a rolling "Latest from \<branch\>" release; pushing a `v*`
 tag adds the same assets to that version's release, next to the Docker image.
-Builds are ad-hoc signed, like an app you build yourself.
 
 The app opens a window, so it wants a screen: on a headless machine use the
 browser or the Docker install instead. The recipe below builds the same app
@@ -36,19 +34,24 @@ yourself.
 
 ## What you need
 
-- macOS (Apple Silicon or Intel), Xcode Command Line Tools, Rust
-  (`brew install rust`), and the npm Tauri CLI (`npm i -g @tauri-apps/cli`).
+- A Linux desktop (x86-64 or 64-bit ARM, Ubuntu 24.04-class), with the
+  libraries a window needs: `libwebkit2gtk-4.1-dev`, `build-essential`,
+  `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`,
+  `librsvg2-dev`, and `python3-venv`.
+- Rust (via `rustup` or your distro) and the npm Tauri CLI
+  (`npm i -g @tauri-apps/cli`).
 - The panel itself, in this folder's parent — this app is built from a clone
   of the panel with this `app/` folder in it.
-- The official `tiiny` CLI for the panel's interactive features (scan, connect,
-  the in-page terminal, firmware). Chat, models and the rest use the device's
-  HTTP API and work without it.
+- The official `tiiny` CLI for the panel's interactive features (scan,
+  connect, the in-page terminal, firmware). Chat, models and the rest use
+  the device's HTTP API and work without it.
 
 ## Build it
 
 ```sh
 # 1. Toolchain (once)
-brew install rust
+sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev python3-venv
 npm i -g @tauri-apps/cli
 
 # 2. The sidecar: a frozen build of the panel (needs a venv with PyInstaller)
@@ -56,7 +59,6 @@ python3 -m venv .venv && .venv/bin/pip install pyinstaller
 .venv/bin/pyinstaller --onefile --name tiiny-panel \
   --add-data "$PWD/static:static" \
   --distpath app/dist tiiny_ui.py
-# (cp drops the executable bit; the sidecar must be runnable)
 chmod +x app/dist/tiiny-panel
 mkdir -p app/binaries
 cp app/dist/tiiny-panel app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)
@@ -64,30 +66,28 @@ cp app/dist/tiiny-panel app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -
 # 3. The app
 cd app
 tauri icon --generate ../static/icons/icon-512.png   # once
-tauri build
+tauri build --bundles appimage
 ```
 
-The finished app is `target/release/bundle/macos/Tiiny Control Panel.app`.
+The finished app is `target/release/bundle/appimage/Tiiny Control
+Panel_<version>_<arch>.AppImage` — `chmod +x` it and run it.
 
-> The app is built, not code-signed: first launch on a *downloaded* copy needs
-> right-click → Open (or `xattr -cr "/Applications/Tiiny Control Panel.app"`).
-> A copy you built yourself just opens.
-
-The same steps run in GitHub Actions on every push — the workflow swaps
-`brew install rust` for rustup, pins the Tauri CLI version, and on Linux adds
-the system libraries a window needs, then bundles to AppImage instead of
-`.app`. That's how the prebuilt apps above are made.
+The same steps run in GitHub Actions on every push (rustup instead of the
+distro's Rust, and the Tauri CLI version pinned). That's how the prebuilt
+apps above are made.
 
 ## Notes and limits
 
-- **Updating:** the panel's in-app update button is for git and Docker installs;
-  this app updates by downloading a new release. The app and the panel share
-  one data folder, so an update from a terminal or a new app is the same data.
+- **Updating:** the panel's in-app update button is for git and Docker
+  installs; this app updates by downloading a new release. The app and the
+  panel share one data folder, so an update from a terminal or a new app is
+  the same data.
 - **Windows** is not supported yet, for the same reason the panel isn't: the
   in-page terminal needs a Unix pseudo-terminal, and Tiiny's CLI is a Linux
   tool. A Windows build is on the way once that's true for the panel.
-- **Microphone** (voice messages, meetings) asks macOS for permission the first
-  time you use it, like any app.
+- **macOS** isn't built in CI for now (the app code is the same; in place of
+  the Linux recipe it wants Xcode CLT + `brew install rust`, then a plain
+  `tauri build`, and you get a `Tiiny Control Panel.app` you can run locally).
 - **Phone pairing, routines, gateway keys and everything else in the panel's
   System pages work unchanged** — they're the panel's, not the window's.
 
@@ -95,6 +95,7 @@ the system libraries a window needs, then bundles to AppImage instead of
 
 `cargo tauri dev` in this folder runs the app in dev mode. If the frozen
 sidecar isn't built yet, it falls back to a system `python3` and the panel's
-sources in the parent folder (set `TIINY_PANEL_DIR` to point at another clone).
-The panel's start-up output is mirrored to `~/Library/Application Support/ai.tiiny.control-panel/panel.log`
-— that's the place to look when something doesn't come up.
+sources in the parent folder (set `TIINY_PANEL_DIR` to point at another
+clone). The panel's start-up output is mirrored to
+`~/.local/share/ai.tiiny.control-panel/panel.log` — that's the place to look
+when something doesn't come up.
