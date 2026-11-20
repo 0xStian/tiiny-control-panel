@@ -23,8 +23,9 @@ publishes it on the repository's [Releases](https://github.com/0xStian/tiiny-con
 - **macOS:** `Tiiny-Control-Panel-macOS-arm64.zip` (Apple Silicon) or
   `Tiiny-Control-Panel-macOS-x86_64.zip` (Intel) — unzip, then open
   (right-click → Open the first time).
-- **Linux:** `…-Linux-x86_64.AppImage` or `…-Linux-aarch64.AppImage` —
-  `chmod +x` it, then run it.
+- **Linux:** `Tiiny Control Panel_<version>_amd64.AppImage` (x86-64) or
+  `…_aarch64.AppImage` (64-bit ARM) — the name has a space, so quote it in
+  the terminal; `chmod +x` it, then run it.
 
 Every push updates a rolling "Latest from \<branch\>" release; pushing a `v*`
 tag adds the same assets to that version's release, next to the Docker image.
@@ -58,6 +59,7 @@ python3 -m venv .venv && .venv/bin/pip install pyinstaller
   --distpath app/dist tiiny_ui.py
 # (cp drops the executable bit; the sidecar must be runnable)
 chmod +x app/dist/tiiny-panel
+mkdir -p app/binaries
 cp app/dist/tiiny-panel app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)
 
 # 3. The app

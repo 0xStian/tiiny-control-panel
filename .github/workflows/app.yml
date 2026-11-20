@@ -64,6 +64,7 @@ jobs:
           .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
             --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
           chmod +x dist/tiiny-panel
+          mkdir -p app/binaries
           cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
 
       - name: Build the app
@@ -114,6 +115,7 @@ jobs:
           .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
             --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
           chmod +x dist/tiiny-panel
+          mkdir -p app/binaries
           cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
 
       - name: Build the app
@@ -172,6 +174,7 @@ jobs:
           .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
             --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
           chmod +x dist/tiiny-panel
+          mkdir -p app/binaries
           cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
 
       - name: Build the AppImage
@@ -229,6 +232,7 @@ jobs:
           .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
             --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
           chmod +x dist/tiiny-panel
+          mkdir -p app/binaries
           cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
 
       - name: Build the AppImage
