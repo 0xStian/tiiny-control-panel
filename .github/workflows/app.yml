@@ -1,0 +1,156 @@
+# Builds the desktop app (app/) and publishes it as release assets.
+#
+# - push to main / desktop-app -> rolling "Latest from <branch>" releases
+#   (one per branch, overwritten on every push)
+# - push of a v* tag           -> versioned "Tiiny Control Panel <ver> — desktop apps"
+#   release, next to the Docker/source release this repo already publishes
+#
+# Builds:
+#   Linux x86_64           -> AppImage
+#   Linux aarch64          -> AppImage
+#
+# macOS is not built in CI for now: the public Apple Silicon runner pool has
+# been flaky (a job can sit a long time without a runner and get cancelled),
+# and the builds are unsigned. The app code is platform-neutral, so adding
+# macOS back is two jobs of this same shape.
+#
+# Each platform freezes the panel into a self-contained PyInstaller sidecar
+# first (the app shell spawns it); PyInstaller cannot cross-compile, so the
+# freeze always runs on a runner of the same architecture.
+#
+# Windows is not built: the panel's in-page terminal needs a Unix PTY.
+
+name: Desktop apps
+
+on:
+  push:
+    branches: [main, desktop-app]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+concurrency:
+  group: desktop-apps-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Tag push: assets go to the version release. Branch push: each branch keeps
+  # a rolling "latest" release (action-gh-release creates the tag if new and
+  # moves it forward on later pushes; files with the same name are replaced).
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('app-latest-{0}', github.ref_name) }}
+  # The release NAME goes straight into the publish action's inputs (spaces
+  # are fine there); values written to $GITHUB_ENV may NOT contain spaces —
+  # the runner's env-file parser rejects them, so artifacts are renamed to
+  # hyphenated names before being recorded there.
+
+jobs:
+  linux-x86_64:
+    name: Linux AppImage (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            python3-venv
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install the Tauri CLI
+        run: npm i -g @tauri-apps/cli@2.12.6
+
+      - name: Freeze the panel into a sidecar
+        run: |
+          python3 -m venv .venv-ci
+          .venv-ci/bin/pip install -q pyinstaller
+          .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
+            --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
+          chmod +x dist/tiiny-panel
+          mkdir -p app/binaries
+          cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
+
+      - name: Build the AppImage
+        working-directory: app
+        run: tauri build --bundles appimage
+
+      - name: Locate the AppImage
+        run: |
+          # the bundler names it after the product name, which has a space —
+          # rename to hyphens so the path is safe to write to $GITHUB_ENV
+          for f in app/target/release/bundle/appimage/*.AppImage; do
+            mv "$f" "${f// /-}"
+          done
+          echo "APPIMAGE=$(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
+
+      - name: Publish to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Tiiny Control Panel {0} — desktop apps', github.ref_name) || format('Latest from {0} (build {1})', github.ref_name, github.run_number) }}
+          files: ${{ env.APPIMAGE }}
+          fail_on_unmatched: true
+
+  linux-aarch64:
+    name: Linux AppImage (aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            python3-venv
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install the Tauri CLI
+        run: npm i -g @tauri-apps/cli@2.12.6
+
+      - name: Freeze the panel into a sidecar
+        run: |
+          python3 -m venv .venv-ci
+          .venv-ci/bin/pip install -q pyinstaller
+          .venv-ci/bin/pyinstaller --onefile --name tiiny-panel \
+            --add-data "$PWD/static:static" --distpath dist tiiny_ui.py
+          chmod +x dist/tiiny-panel
+          mkdir -p app/binaries
+          cp dist/tiiny-panel "app/binaries/tiiny-panel-$(rustc -vV | grep host | cut -d' ' -f2)"
+
+      - name: Build the AppImage
+        working-directory: app
+        run: tauri build --bundles appimage
+
+      - name: Locate the AppImage
+        run: |
+          # the bundler names it after the product name, which has a space —
+          # rename to hyphens so the path is safe to write to $GITHUB_ENV
+          for f in app/target/release/bundle/appimage/*.AppImage; do
+            mv "$f" "${f// /-}"
+          done
+          echo "APPIMAGE=$(ls app/target/release/bundle/appimage/*.AppImage)" >> "$GITHUB_ENV"
+
+      - name: Publish to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Tiiny Control Panel {0} — desktop apps', github.ref_name) || format('Latest from {0} (build {1})', github.ref_name, github.run_number) }}
+          files: ${{ env.APPIMAGE }}
+          fail_on_unmatched: true

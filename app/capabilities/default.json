@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The panel's own web UI runs in the window; it talks to the panel's local server and uses no Tauri JS APIs.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}
