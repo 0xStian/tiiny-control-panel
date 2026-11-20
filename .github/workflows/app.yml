@@ -46,13 +46,13 @@ jobs:
     name: macOS app (Apple Silicon)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal
-          echo "source $HOME/.cargo/env" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install the Tauri CLI
         run: npm i -g @tauri-apps/cli@2.12.6
@@ -85,7 +85,7 @@ jobs:
           fi
 
       - name: Publish to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_NAME }}
@@ -96,13 +96,13 @@ jobs:
     name: macOS app (Intel)
     runs-on: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal
-          echo "source $HOME/.cargo/env" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install the Tauri CLI
         run: npm i -g @tauri-apps/cli@2.12.6
@@ -135,7 +135,7 @@ jobs:
           fi
 
       - name: Publish to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_NAME }}
@@ -146,7 +146,7 @@ jobs:
     name: Linux AppImage (x86_64)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install prerequisites
         run: |
@@ -160,7 +160,7 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal
-          echo "source $HOME/.cargo/env" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install the Tauri CLI
         run: npm i -g @tauri-apps/cli@2.12.6
@@ -192,7 +192,7 @@ jobs:
           fi
 
       - name: Publish to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_NAME }}
@@ -203,7 +203,7 @@ jobs:
     name: Linux AppImage (aarch64)
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install prerequisites
         run: |
@@ -217,7 +217,7 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal
-          echo "source $HOME/.cargo/env" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install the Tauri CLI
         run: npm i -g @tauri-apps/cli@2.12.6
@@ -249,7 +249,7 @@ jobs:
           fi
 
       - name: Publish to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_NAME }}
