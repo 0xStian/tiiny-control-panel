@@ -23,9 +23,8 @@ publishes it on the repository's [Releases](https://github.com/0xStian/tiiny-con
 - **macOS:** `Tiiny-Control-Panel-macOS-arm64.zip` (Apple Silicon) or
   `Tiiny-Control-Panel-macOS-x86_64.zip` (Intel) — unzip, then open
   (right-click → Open the first time).
-- **Linux:** `Tiiny Control Panel_<version>_amd64.AppImage` (x86-64) or
-  `…_aarch64.AppImage` (64-bit ARM) — the name has a space, so quote it in
-  the terminal; `chmod +x` it, then run it.
+- **Linux:** `Tiiny-Control-Panel_<version>_amd64.AppImage` (x86-64) or
+  `…_aarch64.AppImage` (64-bit ARM) — `chmod +x` it, then run it.
 
 Every push updates a rolling "Latest from \<branch\>" release; pushing a `v*`
 tag adds the same assets to that version's release, next to the Docker image.
