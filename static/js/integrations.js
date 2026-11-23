@@ -149,7 +149,7 @@ function viewIntegrations(root, ctx) {
     const p = presetOf(a.preset);
     const tokens = (a.tokens_in || 0) + (a.tokens_out || 0);
     const meta = [a.last_used ? `Last used ${fmtAgo(a.last_used)}` : 'Not used yet', `${a.requests || 0} request${a.requests === 1 ? '' : 's'}`,
-      tokens ? `${fmtCount(tokens)} tokens` : null, a.last_model ? shortName(a.last_model) : null].filter(Boolean).join(' · ');
+      tokens ? `${fmtCount(a.tokens_in)} tokens read, ${fmtCount(a.tokens_out)} written` : null, a.last_model ? shortName(a.last_model) : null].filter(Boolean).join(' · ');
     return h('div', {class: 'app-row'},
       h('div', {class: 'model-icon'}, icon(p.ic)),
       h('div', {class: 'app-main'},

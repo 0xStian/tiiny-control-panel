@@ -82,6 +82,8 @@ function fmtCount(n) {
   try { return new Intl.NumberFormat('en', {notation: 'compact', maximumFractionDigits: 1}).format(n); }
   catch { return n < 1000 ? String(n) : n < 1e6 ? `${+(n / 1e3).toFixed(n < 1e4 ? 1 : 0)}K` : `${+(n / 1e6).toFixed(1)}M`; }
 }
+/* 1358248 → "1,358,248" (in the reader's own notation) */
+function fmtFull(n) { return Math.max(0, Math.round(Number(n) || 0)).toLocaleString(); }
 const ACRONYMS = {id: 'ID', npu: 'NPU', ram: 'RAM', soc: 'SoC', cpu: 'CPU', gpu: 'GPU', ip: 'IP', api: 'API', url: 'URL', asr: 'ASR', tts: 'TTS', ocr: 'OCR', mcp: 'MCP', ssid: 'SSID', usb: 'USB', mb: 'MB', gb: 'GB', ipv4: 'IPv4', ipv6: 'IPv6', sn: 'SN'};
 function humanize(key) {
   const words = String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_\-.]+/g, ' ').trim().toLowerCase().split(/\s+/);
@@ -1641,6 +1643,7 @@ function viewDashboard(root, ctx) {
     card({title: 'Loaded models', ic: 'box', sub: 'In NPU memory and ready to use', actions: [btn('Unload all', unloadAll, {small: true, icon: 'power', kind: 'ghost'}), linkBtn('All models', '#/models', {ic: 'chevron'})]}, h('div', {class: 'stack'}, plannerBox, loadedBody)),
     card({title: 'Quick actions', ic: 'bolt'}, quickActions()),
     typeof historyCard === 'function' ? historyCard(ctx) : null,
+    typeof tokenCard === 'function' ? tokenCard(ctx) : null,
     typeof speedCard === 'function' ? speedCard(ctx) : null);
   const renderPlanner = () => { if (typeof npuPlanner === 'function' && S.modelsAt) clear(plannerBox).append(npuPlanner()); };
   ctx.on('running', renderPlanner);
@@ -3917,7 +3920,8 @@ function panelDataCard(ctx) {
   const out = h('div', {class: 'stack-sm'});
   const input = h('input', {type: 'file', accept: '.zip,application/zip', hidden: true});
   const withHistory = h('input', {type: 'checkbox'});
-  const KINDS = [['chats', 'Chats'], ['projects', 'Projects'], ['meetings', 'Meetings'], ['gallery', 'Gallery'], ['reviews', 'Code reviews'], ['studio', 'Studio']];
+  const KINDS = [['chats', 'Chats'], ['projects', 'Projects'], ['meetings', 'Meetings'], ['gallery', 'Gallery'], ['reviews', 'Code reviews'], ['routines', 'Routines'], ['studio', 'Studio']];
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   let sum = null, busy = false;
 
   async function load() {
@@ -3929,14 +3933,16 @@ function panelDataCard(ctx) {
     if (!ctx.alive() || !sum) return;
     const c = sum.collections || {};
     const rows = KINDS.filter(([k]) => c[k]?.records).map(([k, label]) => [label, `${c[k].records} · ${fmtBytes(c[k].bytes)}`]);
+    if (rows.length) rows.push(['In total', fmtBytes(sum.bytes)]);
+    if (sum.apps) rows.push(['Apps on Integrations', String(sum.apps)]);
     clear(body).append(
       h('p', {class: 'muted small'}, 'Everything the panel keeps on this computer, as one ZIP file. The device backup doesn’t include it.'),
-      rows.length ? kvList(rows.concat([['In total', fmtBytes(sum.bytes)]])) : h('p', {class: 'muted'}, 'Nothing saved yet.'),
+      rows.length ? kvList(rows) : h('p', {class: 'muted'}, 'Nothing saved yet.'),
       h('label', {class: 'check'}, withHistory, h('span', {}, h('span', {}, 'Include the performance history'),
         h('small', {class: 'muted'}, `The dashboard’s charts of the last 7 days (${fmtBytes(sum.metrics_bytes || 0)}).`))),
       h('div', {class: 'row wrap'}, btn('Download a backup', exportIt, {kind: 'primary', icon: 'download'}),
         btn('Restore from a backup…', () => input.click(), {icon: 'upload'})),
-      h('p', {class: 'muted small'}, 'Never in a backup: API keys, and the sign-ins of this browser and your paired phones.'),
+      h('p', {class: 'muted small'}, 'Never in a backup: keys (your Tiiny’s, Brave Search’s, your apps’), and the sign-ins of this browser and your paired phones. Apps on Integrations come along with only the fingerprints of their keys, which is enough for the keys to keep working.'),
       out, input);
   }
 
@@ -3970,9 +3976,12 @@ function panelDataCard(ctx) {
     }
     const r = fin.result || {};
     const parts = [r.added ? `${r.added} added` : '', r.replaced ? `${r.replaced} replaced by a newer copy` : '', r.kept ? `${r.kept} already here` : ''].filter(Boolean);
+    const a = r.apps;
+    const apps = !a ? '' : a.added ? `${plural(a.added, 'app')} on Integrations restored${a.kept ? ` (${a.kept} already here)` : ''}; their keys work again.`
+      : a.kept ? `The ${a.kept === 1 ? 'app' : `${a.kept} apps`} on Integrations ${a.kept === 1 ? 'was' : 'were'} already here.` : '';
     out.append(h('div', {class: 'banner ok'}, icon('check'), h('div', {class: 'text'}, h('strong', {}, 'Restored'),
-      h('span', {class: 'small'}, [`${parts.join(', ') || 'Nothing new'}.`, r.settings ? 'Settings restored.' : '',
-        r.aside ? `What it replaced was set aside in ${r.aside}.` : ''].filter(Boolean).join(' '))),
+      h('span', {class: 'small'}, [`${parts.join(', ') || 'Nothing new'}.`, apps, a?.refused ? `${plural(a.refused, 'app')} couldn’t be read and ${a.refused === 1 ? 'was' : 'were'} left out.` : '',
+        r.settings ? 'Settings restored.' : '', r.aside ? `What it replaced was set aside in ${r.aside}.` : ''].filter(Boolean).join(' '))),
       btn('Reload the page', () => location.reload(), {small: true, icon: 'refresh'})));
     if (typeof ChatUI !== 'undefined') { ChatUI.cache?.clear?.(); ChatUI.summaries = null; }
     load().catch(() => {});
@@ -4004,8 +4013,13 @@ function panelDataCard(ctx) {
         cols[k].here ? h('span', {class: 'muted'}, ` (${cols[k].here} already here)`) : null));
       const merge = h('input', {type: 'radio', name: 'restore-mode', checked: true});
       const replace = h('input', {type: 'radio', name: 'restore-mode'});
-      const settings = h('input', {type: 'checkbox'});   // off: restoring into the same computer shouldn't change its settings
-      const go = h('button', {class: 'btn primary', type: 'button', onclick: () => { done = true; m.close(); resolve({mode: replace.checked ? 'replace' : 'merge', settings: settings.checked && !!info.settings}); }}, 'Restore');
+      // An empty panel is a move to another computer, so its settings come along. One with data keeps its own, unless asked.
+      const empty = !KINDS.some(([k]) => sum?.collections?.[k]?.records) && !sum?.apps;
+      const settings = h('input', {type: 'checkbox', checked: empty});
+      const ba = info.apps;
+      const apps = h('input', {type: 'checkbox', checked: true});
+      const appNames = ba?.names?.length ? `${ba.names.join(', ')}${ba.count > ba.names.length ? ` and ${ba.count - ba.names.length} more` : ''}. ` : '';
+      const go = h('button', {class: 'btn primary', type: 'button', onclick: () => { done = true; m.close(); resolve({mode: replace.checked ? 'replace' : 'merge', settings: settings.checked && !!info.settings, apps: apps.checked && !!ba?.count}); }}, 'Restore');
       for (const r of [merge, replace]) r.addEventListener('change', () => { go.className = `btn ${replace.checked ? 'danger solid' : 'primary'}`; });
       const m = modal({title: `Restore from ${name}?`, onClose: () => { if (!done) resolve(null); }, body: h('div', {class: 'stack'},
         h('p', {}, `Made ${fmtDate(info.created)}${info.version ? ` with version ${info.version} of the panel` : ''}.`),
@@ -4015,15 +4029,19 @@ function panelDataCard(ctx) {
         h('label', {class: 'check'}, merge, h('span', {}, h('span', {}, 'Add what’s missing'),
           h('small', {class: 'muted'}, 'Keeps everything here. When both have the same item, the newer one wins.'))),
         h('label', {class: 'check'}, replace, h('span', {}, h('span', {}, 'Replace everything'),
-          h('small', {class: 'muted'}, 'Your current chats, projects, meetings, Gallery and code reviews are set aside first (in the data folder), then the backup takes their place.'))),
+          h('small', {class: 'muted'}, 'Your current chats, projects, meetings, Gallery, code reviews and routines are set aside first (in the data folder), then the backup takes their place. With the apps ticked, the same goes for the apps on Integrations.'))),
+        ba?.count ? h('label', {class: 'check'}, apps, h('span', {}, h('span', {}, `Restore the ${ba.count === 1 ? 'app' : `${ba.count} apps`} on Integrations`,
+            ba.here ? h('span', {class: 'muted'}, ` (${ba.here} already here)`) : null),
+          h('small', {class: 'muted'}, `${appNames}Their keys keep working, and Integrations’ own switches come along. An app that’s already here stays as it is, unless you replace everything.`)))
+          : ba ? null : h('p', {class: 'muted small'}, 'This backup was made before backups included the apps on Integrations, so it has none.'),
         info.settings ? h('label', {class: 'check'}, settings, h('span', {}, h('span', {}, 'Also restore the panel’s settings'),
-          h('small', {class: 'muted'}, 'Model pins, idle unloading, agent tools and the like. API keys are never in a backup.'))) : null),
+          h('small', {class: 'muted'}, `Model pins, idle unloading, agent tools and the like. Keys are never in a backup.${empty ? ' Ticked because this panel is still empty, as on a new computer.' : ''}`))) : null),
         actions: [h('button', {class: 'btn ghost', type: 'button', onclick: () => m.close()}, 'Cancel'), go]});
     });
   }
 
   load().catch(e => { if (ctx.alive()) clear(body).append(errorBlock(e.message, {title: 'Couldn’t read the panel’s data', retry: () => load().catch(() => {})})); });
-  return card({title: 'Your panel’s data', ic: 'archive', sub: 'Chats, projects, meetings, the Gallery and code reviews'}, body);
+  return card({title: 'Your panel’s data', ic: 'archive', sub: 'Chats, projects, meetings, the Gallery, code reviews, routines and your apps'}, body);
 }
 
 /* ------------------------------------------------------------------- System */

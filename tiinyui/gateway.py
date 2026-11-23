@@ -36,9 +36,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION, activity, device, httpbody, npu
-from .common import BORROWED, USAGE, DeviceError, atomic_write, error_message, network_host_ok, new_id
+from .common import BORROWED, USAGE, DeviceError, atomic_write, error_message, network_host_ok, new_id, valid_id
 
 DEFAULT_PORT = 8766
+MAX_APPS = 100
 MAX_BODY = 100 * 1024 ** 2
 KEY_PREFIX = "tiiny_"
 MAX_FAILURES = 20           # wrong keys per 5 minutes from one address before the gateway stops listening to it
@@ -93,6 +94,8 @@ FORWARD = {
     "/api/embed": ("embeddings", "ollama", "embed"),
 }
 PASS_HEADERS = ("content-type", "accept", "anthropic-version", "anthropic-beta")
+# Names the device gives requests itself: the ones without a name (by API style), and the panel's own.
+DEVICE_NAMES = ("default", "anthropic", "ollama", "unknown", "api", "tiinyos", activity.PANEL_APP.lower())
 
 
 def _h(value: str) -> str:
@@ -101,6 +104,13 @@ def _h(value: str) -> str:
 
 def short(mid) -> str:
     return str(mid or "").split("/")[-1]
+
+
+def device_name(app) -> str:
+    """The name an app's requests carry on the device: its name on Integrations. That's how the Tiiny's own token
+    statistics and its list of running work tell the apps apart (tiinyui/tokens.py, activity.py)."""
+    name = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(app.get("name") or "")).split())[:60] or "App"
+    return f"{name} (app)" if name.lower() in DEVICE_NAMES else name
 
 
 def family_of(path: str) -> str:
@@ -199,11 +209,75 @@ class Apps:
         app = self._new(str(spec.get("name") or "").strip()[:60], spec)
         key, app["hash"], app["hint"] = self._key()
         with self.lock:
-            if len(self.apps) >= 100:
+            if len(self.apps) >= MAX_APPS:
                 raise ValueError("That's a lot of apps: revoke some you no longer use first.")
             self.apps.append(app)
             self._save()
         return self.public(app), key
+
+    # -- for a backup of the panel's data (tiinyui/backup.py) --------------------------------------------------
+    def export_all(self) -> list:
+        """Every app as it's stored: its settings, its counters and its key's fingerprint. There's no key to give:
+        the panel never keeps one."""
+        with self.lock:
+            return [dict(a) for a in self.apps]
+
+    def _from_backup(self, raw):
+        """An app out of a backup, checked field by field. None when it can't be one."""
+        if not isinstance(raw, dict) or not valid_id(raw.get("id")) or raw["id"] == "keyless":
+            return None
+        if not isinstance(raw.get("hash"), str) or not re.fullmatch(r"[0-9a-f]{64}", raw["hash"]):
+            return None
+        try:
+            app = self._new(str(raw.get("name") or "").strip()[:60],
+                            {k: raw[k] for k in ("preset", "scopes", "policy", "unload_after", "default_model") if k in raw})
+        except (ValueError, TypeError):
+            return None
+        hint = raw.get("hint")
+        app.update(id=raw["id"], hash=raw["hash"], hint=hint if isinstance(hint, str) and re.fullmatch(r"[\w-]{0,8}", hint) else "",
+                   last_model=str(raw.get("last_model") or "")[:300])
+        for k in ("requests", "tokens_in", "tokens_out"):
+            v = raw.get(k)
+            app[k] = int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < 2 ** 62 else 0
+        for k, fallback in (("created", app["created"]), ("last_used", None)):
+            v = raw.get(k)
+            app[k] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 2 ** 40 else fallback
+        return app
+
+    def known(self, apps) -> int:
+        """How many of a backup's apps are here already (the same id, or the same key)."""
+        with self.lock:
+            ids, hashes = {a["id"] for a in self.apps}, {a["hash"] for a in self.apps}
+        return sum(1 for a in apps if isinstance(a, dict) and (a.get("id") in ids or a.get("hash") in hashes))
+
+    def restore(self, apps, mode="merge") -> dict:
+        """Take the apps of a backup. "merge" adds the ones that aren't here and leaves the others as they are;
+        "replace" swaps the list for the backup's. Their keys work again at once: a key is checked against its
+        fingerprint, and that is what a backup holds. Returns {"added", "kept", "refused"}."""
+        good, refused = [], 0
+        for raw in apps if isinstance(apps, list) else []:
+            app = self._from_backup(raw)
+            if app is None or any(g["id"] == app["id"] or g["hash"] == app["hash"] for g in good):
+                refused += 1
+            else:
+                good.append(app)
+        with self.lock:
+            if mode == "replace":
+                kept = 0
+                self.apps = good[:MAX_APPS]
+                added, refused = len(self.apps), refused + max(0, len(good) - MAX_APPS)
+            else:
+                added = kept = 0
+                for app in good:
+                    if any(a["id"] == app["id"] or a["hash"] == app["hash"] for a in self.apps):
+                        kept += 1
+                    elif len(self.apps) >= MAX_APPS:
+                        refused += 1
+                    else:
+                        self.apps.append(app)
+                        added += 1
+            self._save()
+        return {"added": added, "kept": kept, "refused": refused}
 
     def _find(self, aid):
         return next((a for a in self.apps if a["id"] == aid), None)
@@ -696,33 +770,43 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
         if asked is None and "model" in qs:
             asked = qs["model"][0]
         model = resolve(asked, kind, app, info)
-        # the device gets the model's real id
-        if req is not None:
-            req["model"] = model
-            body = json.dumps(req).encode()
-        elif where:
-            body = body[:where[0]] + model.encode() + body[where[1]:]
-        if "model" in qs or path == "/v1/ocr":
-            qs["model"] = [model]
-        path_qs = path + ("?" + urllib.parse.urlencode(qs, doseq=True) if qs else "")
-        headers = {k: v for k, v in self.headers.items() if k.lower() in PASS_HEADERS}
-        gw.apps.touch(app, model, request=True)
-        with npu.use(model, policy=app.get("policy") or "fits", requester=app["name"], unload_after=app.get("unload_after"), why=app["name"]):
-            with activity.track(path, model, title=app["name"]):
-                USAGE.touch(model)
-                conn, resp = device.device_open(info, "core", "POST", path_qs, body=body, headers=headers, timeout=900)
-                try:
-                    if resp.status == 404:   # unloaded a moment ago (another app, the page): load it again, once
-                        peek = resp.read(4096)
-                        if b"not loaded" in peek:
-                            conn.close()
-                            npu.ensure_ready(model, policy=app.get("policy") or "fits", requester=app["name"], info=info)
+        # the device gets the model's real id, and on the routes that take one, the app's name
+        with activity.named(device_name(app)):
+            sent = None   # the request as sent, when the app's name was added to it
+            if req is not None:
+                req["model"] = model
+                sent = device.with_name(path, req)
+                body = json.dumps(sent).encode()
+                sent = sent if sent is not req else None
+            elif where:
+                body = body[:where[0]] + model.encode() + body[where[1]:]
+            if "model" in qs or path == "/v1/ocr":
+                qs["model"] = [model]
+            path_qs = path + ("?" + urllib.parse.urlencode(qs, doseq=True) if qs else "")
+            headers = {k: v for k, v in self.headers.items() if k.lower() in PASS_HEADERS}
+            gw.apps.touch(app, model, request=True)
+            with npu.use(model, policy=app.get("policy") or "fits", requester=app["name"], unload_after=app.get("unload_after"), why=app["name"]):
+                with activity.track(path, model, title=app["name"]):
+                    USAGE.touch(model)
+                    conn, resp = device.device_open(info, "core", "POST", path_qs, body=body, headers=headers, timeout=900)
+                    try:
+                        reloaded = False
+                        while resp.status in (400, 404, 422):   # two things can be put right, each once
+                            peek = resp.read(4096)
+                            if resp.status == 404 and b"not loaded" in peek and not reloaded:
+                                reloaded = True   # unloaded a moment ago (another app, the page): load it again
+                                conn.close()
+                                npu.ensure_ready(model, policy=app.get("policy") or "fits", requester=app["name"], info=info)
+                            elif device.name_refused(resp.status, peek, sent):
+                                sent = None   # this Tiiny doesn't take a name: the request goes as it came
+                                conn.close()
+                                body = json.dumps(req).encode()
+                            else:
+                                return self.relay_bytes(resp.status, resp, peek, app, family)
                             conn, resp = device.device_open(info, "core", "POST", path_qs, body=body, headers=headers, timeout=900)
-                        else:
-                            return self.relay_bytes(resp.status, resp, peek, app, family)
-                    self.relay(resp, app, family)
-                finally:
-                    conn.close()
+                        self.relay(resp, app, family)
+                    finally:
+                        conn.close()
 
     def relay_bytes(self, status, resp, data, app, family):
         data += resp.read()

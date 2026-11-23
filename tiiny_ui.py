@@ -64,7 +64,7 @@ if os.name == "nt":  # the in-page terminal needs a Unix pseudo-terminal
     sys.exit("Tiiny Control Panel runs on Linux and macOS. Windows isn't supported yet.")
 
 from tiinyui import (VERSION, activity, agenttools, backup, commands, decide, device, firmware, gateway, history, httpbody, launcher,
-                     mcp, npu, routines, selfupdate, tlscert, tools, turns, webfetch, websearch)
+                     mcp, npu, routines, selfupdate, tlscert, tokens, tools, turns, webfetch, websearch)
 from tiinyui.browserauth import CODE_TTL, DEVICE_CODE_TTL, STORAGE_KEY, BrowserAuth
 from tiinyui.clitools import Runtime
 from tiinyui.common import (BORROWED, USAGE, BadRequest, DeviceError, atomic_write, clamp_int, data_dir, error_message, guess_mime,
@@ -471,6 +471,7 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
         ("GET", r"/api/metrics", "api_metrics"),
         ("GET", r"/api/metrics/speed", "api_metrics_speed"),
         ("GET", r"/api/metrics/idle", "api_metrics_idle"),
+        ("GET", r"/api/tokens", "api_tokens"),
         ("POST", r"/api/models/borrowed", "api_models_borrowed"),
         # apps that use the Tiiny through the gateway (this computer only: in LAN_FORBIDDEN)
         ("GET", r"/api/apps", "api_apps"),
@@ -1082,7 +1083,10 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
             headers["Content-Type"] = ctype
             headers["Content-Length"] = str(length)
         elif "json" in body:
-            payload = json.dumps(body["json"]).encode()
+            sent = body["json"]
+            if service == "core" and method == "POST":   # a chat request from the page carries the panel's name
+                sent = device.with_name(path, sent)
+            payload = json.dumps(sent).encode()
             headers["Content-Type"] = "application/json"
         timeout = clamp_int(body.get("timeout"), 1, 3600, 60)
         label = f"{method} {path}" + ("" if service == "core" else f"  (Host: {SERVICES[service][1] or service})")
@@ -1756,7 +1760,8 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
 
     # -- API: a backup of the panel's own data (tiinyui/backup.py) ------------------------------------
     def api_backup(self, q):
-        self.send_json(200, dict(backup.summary(STORE), job=(lambda j: j.info() if j else None)(JOBS.running("backup"))))
+        self.send_json(200, dict(backup.summary(STORE), apps=len(GATEWAY.apps.list()) if GATEWAY else 0,
+                                 job=(lambda j: j.info() if j else None)(JOBS.running("backup"))))
 
     def api_backup_export(self, q):
         body = self.read_json()
@@ -1768,7 +1773,7 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
             name = f"tiiny-panel-backup-{time.strftime('%Y-%m-%d')}.zip"
             path = RT.new_output_path(name)
             job.update(message="Packing your data…")
-            manifest = backup.export(STORE, SETTINGS, path, metrics=metrics, job=job)
+            manifest = backup.export(STORE, SETTINGS, path, metrics=metrics, apps=GATEWAY.apps if GATEWAY else None, job=job)
             return {"file": RT.register(path, name, "output"), "manifest": manifest}
         self.send_json(200, JOBS.start("backup", "Backing up the panel's data", work, {"action": "export"}).info())
 
@@ -1779,7 +1784,7 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
         return rec["path"]
 
     def api_backup_inspect(self, q):
-        self.send_json(200, backup.inspect(STORE, self._backup_upload(self.read_json())))
+        self.send_json(200, backup.inspect(STORE, self._backup_upload(self.read_json()), apps=GATEWAY.apps if GATEWAY else None))
 
     def api_backup_restore(self, q):
         body = self.read_json()
@@ -1791,9 +1796,12 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
 
         def work(job):
             job.update(message="Restoring…")
-            out = backup.restore(STORE, SETTINGS, path, mode=mode, with_settings=bool(body.get("settings")), job=job)
-            if out.get("settings") and GATEWAY:
+            out = backup.restore(STORE, SETTINGS, path, mode=mode, with_settings=bool(body.get("settings")),
+                                 apps=GATEWAY.apps if GATEWAY else None, with_apps=bool(body.get("apps")), job=job)
+            if (out.get("settings") or out.get("gateway")) and GATEWAY:
                 GATEWAY.apply()   # restored gateway settings take effect now
+            if ROUTINES:
+                ROUTINES.catch_up()   # a restored routine that was due long ago is skipped, not run at once
             return out
         self.send_json(200, JOBS.start("backup", "Restoring the panel's data", work, {"action": "restore"}).info())
 
@@ -1809,6 +1817,29 @@ class Handler(httpbody.ClosingHandler, BaseHTTPRequestHandler):
                              "keep_loaded": SETTINGS.get("keep_loaded") or [], "models": METRICS.idle_status(),
                              "events": [e for e in list(METRICS.events)[-50:] if e["kind"] == "auto-unload"],
                              "borrowed": METRICS.borrowed_status()})
+
+    # -- API: token usage, as the device itself counts it (tiinyui/tokens.py) ------------------------------------------
+    def api_tokens(self, q):
+        rng = q.get("range", ["7d"])[0]
+        if rng not in tokens.RANGES:
+            raise BadRequest("Choose today, 7d, 28d or all.")
+        info = DEVCONN.resolve()
+
+        def make():
+            apps = GATEWAY.apps.list() if GATEWAY else []
+            out = tokens.read(info, rng, apps=apps)
+            if out.get("supported"):   # the device's own apps by their names (KiloCode-Tiiny → KiloCode)
+                wanted = {a["id"] for a in out["apps"] if a["kind"] == "app"}
+                names = activity.app_names(lambda: device_call(info, "core", "GET", "/api/v1/apps", timeout=8)[1], wanted)
+                for a in out["apps"]:
+                    if a["kind"] == "app":
+                        a["name"] = names.get(a["id"]) or a["name"]
+            return out
+        try:
+            out = tokens.cached((info.get("address"), info.get("port"), rng), make)
+        except DeviceError as e:   # switched off, locked or not set up yet: the card says so, and there's nothing to log
+            out = {"supported": True, "range": rng, "offline": True, "error": str(e)}
+        self.send_json(200, out)
 
     # -- API: apps that use the Tiiny through the gateway (tiinyui/gateway.py) -------------------------------------
     def api_apps(self, q):
@@ -2323,9 +2354,10 @@ def main():
     dev = DEVCONN.resolve()
     if args.gateway_port:
         SETTINGS.override("gateway_port", args.gateway_port)
-    GATEWAY = gateway.Gateway(DEVCONN, SETTINGS, gateway.Apps(CONFIG_DIR / "apps.json"), tls=TLS, verbose=VERBOSE,
+    apps = gateway.Apps(CONFIG_DIR / "apps.json")
+    GATEWAY = gateway.Gateway(DEVCONN, SETTINGS, apps, tls=TLS, verbose=VERBOSE,
                               lan_ip=lambda: lan_ip_towards(DEVCONN.resolve().get("address") or ""), names=SERVER["names"],
-                              mcp=mcp.Server(tools.Toolbox(DEVCONN, SETTINGS, GALLERY, RT)).handle)
+                              mcp=mcp.Server(tools.Toolbox(DEVCONN, SETTINGS, GALLERY, RT, apps=apps)).handle)
     GATEWAY.apply()
     gw = GATEWAY.status()
     ROUTINES.start()

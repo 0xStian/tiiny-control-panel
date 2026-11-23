@@ -253,6 +253,202 @@ function speedCard(ctx) {
   return card({title: 'Speed', ic: 'bolt', sub: 'Measured on your chats: words generated per second, and the wait for the first one'}, body);
 }
 
+/* Token usage: what the Tiiny itself counted, whoever asked (tiinyui/tokens.py). Tokens read (prompts) and written
+   (answers) per day and model, and the total per app. Two series, always in this order and these colors: read, written.
+   Where the device gives no split (per app over several days, and all time), bars are neutral. */
+const TOKEN_RANGES = [['today', 'Today'], ['7d', '7 days'], ['28d', '4 weeks'], ['all', 'All time']];
+const isoDay = iso => { const [y, m, d] = String(iso).split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1); };
+
+function tokenCard(ctx) {
+  let range = localStorage.getItem('tiiny.tokenRange');
+  if (!TOKEN_RANGES.some(([v]) => v === range)) range = '7d';
+  let data = null, chart = null;
+  const box = h('div', {class: 'stack viz tok'}, loadingBlock());
+  const seg = segmented(TOKEN_RANGES, range, v => { range = v; localStorage.setItem('tiiny.tokenRange', v); data = null; box.classList.add('refetch'); load(); });
+
+  const num = n => h('td', {class: 'num tok-n', title: `${fmtFull(n)} tokens`}, h('span', {class: 'full'}, fmtFull(n)), h('span', {class: 'short'}, fmtCount(n)));
+  const count = n => h('td', {class: 'num'}, n == null ? '–' : fmtFull(n));
+  /* One row's bar: its length is the row's share of the largest row; split into read and written where that's known. */
+  function bar(row, max) {
+    const pct = v => `${Math.max(0, v / (max || 1) * 100)}%`;
+    const split = row.read != null && row.written != null;
+    const parts = split ? [['r', row.read], ['w', row.written]].filter(([, v]) => v > 0) : (row.tokens > 0 ? [['t', row.tokens]] : []);
+    return h('div', {class: 'tok-bar', 'aria-hidden': 'true'}, parts.map(([k, v], i) => h('i', {class: `${k}${i === parts.length - 1 ? ' end' : ''}`, style: {width: pct(v)}})));
+  }
+  function tile(label, value, sub) {
+    return h('div', {class: 'tok-tile'}, h('span', {class: 'tok-label'}, label), h('strong', {class: 'tok-value', title: `${fmtFull(value)}`}, fmtCount(value)),
+      sub ? h('span', {class: 'tok-sub'}, sub) : null);
+  }
+  function legend() {
+    return h('div', {class: 'planner-legend'}, h('span', {class: 'lg'}, h('i', {class: 'sw s1'}), h('span', {}, 'Read (prompts)')),
+      h('span', {class: 'lg'}, h('i', {class: 'sw tok-sw-w'}), h('span', {}, 'Written (answers)')));
+  }
+  const appNote = a => a.kind === 'panel' ? 'This panel’s chats, routines and code reviews'
+    : a.kind === 'unnamed' ? `Programs that use the ${a.api} without saying who they are`
+    : a.kind === 'integration' ? 'An app on Integrations' : '';
+  const appModels = a => { const m = a.models || []; return m.length ? `${m.slice(0, 3).map(x => `${shortName(x.id)} ${fmtCount(x.tokens)}`).join(' · ')}${m.length > 3 ? ` · and ${m.length - 3} more` : ''}` : ''; };
+
+  function table(rows, name, first, split) {
+    const max = Math.max(1, ...rows.map(r => r.tokens));
+    return h('div', {class: 'table-wrap'}, h('table', {class: 'table tok-table'},
+      h('thead', {}, h('tr', {}, h('th', {}, first), split ? [h('th', {class: 'num'}, 'Read'), h('th', {class: 'num'}, 'Written'), h('th', {class: 'num'}, 'Requests')] : h('th', {class: 'num'}, 'Tokens'))),
+      h('tbody', {}, rows.map(r => h('tr', {},
+        h('td', {class: 'tok-name'}, name(r), bar(split ? r : {tokens: r.tokens}, max)),
+        split ? [num(r.read), num(r.written), count(r.requests)] : num(r.tokens))))));
+  }
+
+  function render() {
+    box.classList.remove('refetch');
+    if (!data) return;
+    if (!data.supported) {
+      clear(box).append(emptyState('activity', 'This Tiiny doesn’t count tokens', 'Its software has no token statistics. A newer TiinyOS does: look for an update under System.'));
+      return;
+    }
+    if (data.offline) {   // switched off, locked or not set up yet
+      clear(box).append(h('div', {class: 'toolbar'}, seg), emptyState('activity', 'No numbers right now', `Your Tiiny keeps these counts, and it isn’t answering. ${data.error || ''}`,
+        btn('Try again', () => { box.classList.add('refetch'); load(); }, {small: true, icon: 'refresh'})));
+      return;
+    }
+    const t = data.total || {};
+    const days = data.days || [];
+    const used = (t.tokens || 0) > 0;
+    const parts = [h('div', {class: 'toolbar'}, seg)];
+    parts.push(data.split
+      ? h('div', {class: 'tok-tiles'}, tile('Tokens', t.tokens), tile('Read', t.read, 'prompts'), tile('Written', t.written, 'answers'), tile('Requests', t.requests))
+      : h('div', {class: 'tok-tiles'}, tile('Tokens', t.tokens, 'since your Tiiny started counting')));
+    if (!used) parts.push(h('p', {class: 'muted'}, data.range === 'today' ? 'Nothing counted today yet.' : 'Nothing counted in this time.'));
+    if (used && data.split) parts.push(legend());
+    chart = null;
+    if (used && days.length > 1) {
+      chart = dayChart(days, data.today);
+      const numbers = h('details', {class: 'perf-table'}, h('summary', {class: 'small'}, 'Show the numbers'));
+      numbers.append(h('div', {class: 'table-wrap perf-table-box'}, h('table', {class: 'table'},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Day'), h('th', {class: 'num'}, 'Read'), h('th', {class: 'num'}, 'Written'), h('th', {class: 'num'}, 'Requests'))),
+        h('tbody', {}, days.slice().reverse().map(d => h('tr', {}, h('td', {}, isoDay(d.date).toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'})),
+          h('td', {class: 'num'}, fmtFull(d.read)), h('td', {class: 'num'}, fmtFull(d.written)), h('td', {class: 'num'}, fmtFull(d.requests))))))));
+      parts.push(chart.el, numbers);
+    }
+    if (data.models?.length) parts.push(h('h4', {class: 'tok-h'}, 'By model'), table(data.models, m => h('strong', {title: m.id}, shortName(m.id)), 'Model', data.split));
+    if (data.apps?.length) {
+      const split = data.split && data.apps.every(a => a.read != null);
+      parts.push(h('h4', {class: 'tok-h'}, 'By app'), table(data.apps, a => [h('strong', {}, a.name), h('small', {class: 'muted'}, [appNote(a), appModels(a)].filter(Boolean).join(' · '))], 'App', split));
+    }
+    parts.push(h('p', {class: 'small muted'}, 'Your Tiiny counts these itself, for chat models, whoever asked: this panel, Tiiny’s own apps, your apps on Integrations and anything else that uses it. ',
+      'Embeddings, pictures and speech aren’t counted. Days are the Tiiny’s own. ',
+      data.range !== 'all' && data.all_time ? `All time: ${fmtCount(data.all_time)} tokens.` : ''));
+    if (data.apps?.some(a => a.kind === 'unnamed')) parts.push(h('p', {class: 'small muted'}, 'Before version 1.5.0, this panel and the apps on Integrations didn’t give their names, so what they used until then is under No name given.'));
+    clear(box).append(...parts);
+    chart?.draw();
+  }
+
+  async function load() {
+    let got;
+    try { got = await api(`/api/tokens?range=${encodeURIComponent(range)}`); }
+    catch (e) {
+      if (!ctx.alive()) return;
+      box.classList.remove('refetch');
+      if (!data) clear(box).append(h('div', {class: 'toolbar'}, seg), errorBlock(e.message, {title: 'Couldn’t read the token counts', retry: load}));
+      return;
+    }
+    if (!ctx.alive() || got.range !== range) return;
+    if (got.offline && data && !data.offline) { box.classList.remove('refetch'); return; }   // the numbers already shown stay
+    data = got;
+    render();
+  }
+  const onResize = debounce(() => { if (ctx.alive()) chart?.draw(); }, 150);   // only the chart depends on the width
+  if (window.ResizeObserver) { const ro = new ResizeObserver(onResize); ro.observe(box); ctx.onCleanup(() => ro.disconnect()); }
+  else { window.addEventListener('resize', onResize); ctx.onCleanup(() => window.removeEventListener('resize', onResize)); }
+  ctx.every(60000, load);
+  load();
+  return card({title: 'Token usage', ic: 'activity', sub: 'What your models read and wrote, counted by your Tiiny'}, box);
+}
+
+/* Columns per day, read below written, with one tooltip per day. */
+function dayChart(days, today) {
+  const H = 168, M = {l: 44, r: 6, t: 10, b: 24};
+  const wrap = h('div', {class: 'perf-chart tok-chart', tabindex: '0', role: 'img'});
+  const total = days.reduce((a, d) => a + d.read + d.written, 0);
+  wrap.setAttribute('aria-label', `Tokens per day over ${days.length} days, ${fmtCount(total)} in all. The numbers are in the table below.`);
+  const svg = svgEl('svg', {class: 'perf-svg', height: H});
+  const tip = h('div', {class: 'viz-tip', hidden: true});
+  wrap.append(h('div', {class: 'perf-plot'}, svg, tip));
+  const top = Math.max(1, ...days.map(d => d.read + d.written));
+  const pow = 10 ** Math.floor(Math.log10(top));
+  const niceMax = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(k => k * pow).find(v => v >= top);   // a round top whose half is round too
+  let cols = [], current = null;
+  const cap = (x, y, w, hgt, r) => `M${x},${y + hgt} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + hgt} Z`;   // rounded at the data end only
+  function draw() {
+    const w = wrap.clientWidth || 420;
+    const plotW = Math.max(60, w - M.l - M.r), plotH = H - M.t - M.b;
+    svg.setAttribute('viewBox', `0 0 ${w} ${H}`);
+    svg.setAttribute('width', w);
+    clear(svg);
+    const hatch = svgEl('pattern', {id: 'tok-hatch', width: 5, height: 5, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)'});
+    hatch.append(svgEl('rect', {width: 2, height: 5, class: 'tok-hatch-ink'}));
+    const defs = svgEl('defs'); defs.append(hatch); svg.append(defs);
+    const y = v => M.t + (1 - v / niceMax) * plotH;
+    for (const v of [0, niceMax / 2, niceMax]) {
+      svg.append(svgEl('line', {x1: M.l, x2: M.l + plotW, y1: y(v), y2: y(v), class: v === 0 ? 'viz-base' : 'viz-grid'}));
+      const tl = svgEl('text', {x: M.l - 6, y: y(v) + 4, class: 'viz-tick', 'text-anchor': 'end'}); tl.textContent = fmtCount(v); svg.append(tl);
+    }
+    const band = plotW / days.length;
+    const bw = Math.max(2, Math.min(24, band - 4));
+    const every = days.length <= 7 ? 1 : 7;
+    cols = days.map((d, i) => {
+      const cx = M.l + band * (i + 0.5), x = cx - bw / 2;
+      const g = svgEl('g', {class: 'tok-col'});
+      const rh = d.read > 0 ? Math.max(2, d.read / niceMax * plotH) : 0;
+      const wh = d.written > 0 ? Math.max(2, d.written / niceMax * plotH) : 0;
+      const gap = rh && wh ? 2 : 0;   // the surface shows between the two
+      if (rh) g.append(wh ? svgEl('rect', {x, y: y(0) - rh, width: bw, height: rh, class: 'tok-r'})
+        : svgEl('path', {d: cap(x, y(0) - rh, bw, rh, Math.min(4, bw / 2, rh)), class: 'tok-r'}));
+      if (wh) g.append(svgEl('path', {d: cap(x, y(0) - rh - gap - wh, bw, wh, Math.min(4, bw / 2, wh)), class: 'tok-w'}));
+      svg.append(g);
+      if ((days.length - 1 - i) % every === 0) {
+        const tl = svgEl('text', {x: cx, y: H - 7, class: 'viz-tick', 'text-anchor': 'middle'});
+        const dt = isoDay(d.date);
+        tl.textContent = d.date === today ? 'Today' : every === 1 ? dt.toLocaleDateString([], band >= 48 ? {weekday: 'short', day: 'numeric'} : {weekday: 'short'})
+          : dt.toLocaleDateString([], {month: 'short', day: 'numeric'});
+        svg.append(tl);
+      }
+      const hit = svgEl('rect', {x: M.l + band * i, y: 0, width: band, height: H - M.b, class: 'tok-hit'});
+      // a mouse or pen shows the day it's over; a finger shows the day it taps, until it taps elsewhere
+      hit.addEventListener('pointerenter', e => { if (e.pointerType !== 'touch') show(i); });
+      hit.addEventListener('pointermove', e => { if (e.pointerType !== 'touch') show(i); });
+      hit.addEventListener('click', () => show(i));
+      svg.append(hit);
+      return {g, cx, d};
+    });
+    if (current != null) show(Math.min(current, cols.length - 1));
+  }
+  function show(i) {
+    current = i;
+    cols.forEach((c, n) => c.g.classList.toggle('on', n === i));
+    if (i == null || !cols[i]) { tip.hidden = true; return; }
+    const {d, cx} = cols[i];
+    append(clear(tip), [h('div', {class: 'viz-tip-time'}, isoDay(d.date).toLocaleDateString([], {weekday: 'long', month: 'short', day: 'numeric'})),
+      h('div', {class: 'viz-tip-row cur'}, h('i', {class: 'viz-key'}), h('strong', {}, fmtFull(d.read)), h('span', {}, 'read')),
+      h('div', {class: 'viz-tip-row cur'}, h('i', {class: 'viz-key tok-key-w'}), h('strong', {}, fmtFull(d.written)), h('span', {}, 'written')),
+      h('div', {class: 'viz-tip-ev'}, `${fmtFull(d.requests)} request${d.requests === 1 ? '' : 's'}`)]);
+    tip.hidden = false;
+    const tw = tip.offsetWidth || 170, ww = wrap.clientWidth || 300;
+    tip.style.left = `${Math.min(Math.max(0, cx + 14 + tw > ww ? cx - tw - 14 : cx + 14), ww - tw - 2)}px`;
+  }
+  wrap.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') show(null); });
+  wrap.addEventListener('blur', () => show(null));
+  wrap.addEventListener('focus', () => { if (current == null && cols.length) show(cols.length - 1); });
+  wrap.addEventListener('keydown', e => {
+    if (!cols.length) return;
+    const i = current == null ? cols.length - 1 : current;
+    if (e.key === 'ArrowLeft') show(Math.max(0, i - 1));
+    else if (e.key === 'ArrowRight') show(Math.min(cols.length - 1, i + 1));
+    else if (e.key === 'Escape') show(null);
+    else return;
+    e.preventDefault();
+  });
+  return {el: wrap, draw};
+}
+
 /* Models page: unload models nobody used for a while; pins keep favourites loaded. */
 function idleCard(ctx) {
   const body = h('div', {}, loadingBlock());

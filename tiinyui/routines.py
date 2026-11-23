@@ -290,18 +290,23 @@ class Routines:
             self.wake.clear()
 
     def catch_up(self):
-        """When the panel starts: runs it was in the middle of say so, and runs missed long ago are skipped."""
-        now = self.clock()
-        for r in self.store.list("routines"):
-            def apply(rec):
-                for run in rec.get("runs") or []:
-                    if run.get("status") in ("running", "waiting"):
-                        run.update(status="interrupted", summary="The panel stopped while it ran.")
-                if rec.get("enabled") and rec.get("next_run") and rec["next_run"] < now - MISSED_WINDOW:
-                    rec["runs"] = ([{"id": new_id("x"), "at": rec["next_run"], "status": "skipped",
-                                     "summary": "Missed: the panel wasn't running then."}] + (rec.get("runs") or []))[:MAX_RUNS]
-                    rec["next_run"] = next_after(rec["schedule"], now)
-            self.store.update("routines", r["id"], apply)
+        """When the panel starts, and after a backup was restored: runs the panel was in the middle of say so, and runs
+        missed long ago are skipped. A routine that is running right now is left alone."""
+        with self.lock:   # tick() starts runs under the same lock, so none starts halfway through
+            now = self.clock()
+            for r in self.store.list("routines"):
+                if r["id"] in self.active:
+                    continue
+
+                def apply(rec):
+                    for run in rec.get("runs") or []:
+                        if run.get("status") in ("running", "waiting"):
+                            run.update(status="interrupted", summary="The panel stopped while it ran.")
+                    if rec.get("enabled") and rec.get("next_run") and rec["next_run"] < now - MISSED_WINDOW:
+                        rec["runs"] = ([{"id": new_id("x"), "at": rec["next_run"], "status": "skipped",
+                                         "summary": "Missed: the panel wasn't running then."}] + (rec.get("runs") or []))[:MAX_RUNS]
+                        rec["next_run"] = next_after(rec["schedule"], now)
+                self.store.update("routines", r["id"], apply)
 
     def _device_up(self) -> bool:
         try:

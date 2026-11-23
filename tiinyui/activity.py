@@ -1,10 +1,14 @@
 """What the Tiiny is doing right now: the dashboard's "Right now" card and the agent's device check.
 
 The device lists the work running on its models in /api/v1/npu/status. "occupants" holds, for each app, the models it
-uses and their active tasks, each with the kind of work ("modality") and when it started. Programs that don't name
-themselves, this panel included, all show up there as "API". So the panel notes its own requests while they run
-(track), with the chat, page or background job they're for. now() pairs those notes with the device's list: the
-panel's tasks get their names ("Chat: Trip plans", "Reviewing my-project"), and the rest show the app the device names.
+uses and their active tasks, each with the kind of work ("modality") and when it started. A program names itself with
+the `app_id` field of its request; the ones that don't all show up there as "API". The panel names its chat requests
+(PANEL_APP, or the Integrations app a request is for: named(), sent_name()), which is also how the device's own token
+statistics tell them apart (tiinyui/tokens.py). Other requests of the panel (pictures, speech, …) still show as "API".
+
+The name says who asked, not what for. So the panel notes its own requests while they run (track), with the chat, page
+or background job they're for. now() pairs those notes with the device's list: the panel's tasks get their names
+("Chat: Trip plans", "Reviewing my-project"), and the rest show the app the device names.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ KINDS = (
     ("image", r"image|diffus|t2i|i2i", r"/v1/images/"),
     ("chat", r"chat|complet|text|vision|multimodal|llm|vlm", r"/v1/(chat/)?completions|/v1/responses|/v1/messages"),
 )
+PANEL_APP = "Tiiny Control Panel"            # the name the panel's own requests carry on the device
 STUDIO_JOBS = {"music", "model3d", "video"}  # the device works on these after the request has returned
 NOT_DEVICE_JOBS = {"command", "update", "backup"}  # jobs that run on this computer, not on the Tiiny
 APPS_EVERY = 300                              # seconds between fetches of the device's app list
@@ -37,6 +42,8 @@ ROUTE = re.compile(r"[\w\-/?=&.%]{1,200}")
 
 _lock = threading.Lock()
 _mine: dict = {}            # the panel's requests to the device that are still running
+_ended: list = []           # the ones that ended a moment ago: the device can list a request a little longer than it ran
+ENDED_FOR = 3               # seconds such a request still explains a task under its name
 _ids = itertools.count(1)
 _local = threading.local()  # labelled(): what the requests made on this thread are for
 _seen: dict = {}            # the device's tasks at the last look, to notice when one ends
@@ -72,6 +79,22 @@ def kind_of_path(path) -> str | None:
 
 # -- the panel's own requests ------------------------------------------------------------------------------------------
 @contextmanager
+def named(app):
+    """Requests to the device made inside this block carry `app` as their name (an Integrations app's), not the panel's."""
+    old = getattr(_local, "app", None)
+    _local.app = app
+    try:
+        yield
+    finally:
+        _local.app = old
+
+
+def sent_name() -> str:
+    """The name the requests made on this thread carry on the device."""
+    return getattr(_local, "app", None) or PANEL_APP
+
+
+@contextmanager
 def labelled(title=None, href=None, phone=False):
     """Requests to the device made inside this block are for `title`, shown on the page `href`."""
     old = getattr(_local, "label", None)
@@ -92,7 +115,7 @@ def track(path, model=None, *, title=None, href=None, phone=None):
         return
     label = getattr(_local, "label", None) or {}
     job = jobs.current()
-    entry = {"id": next(_ids), "kind": kind, "model": str(model or ""), "started": time.time(),
+    entry = {"id": next(_ids), "kind": kind, "model": str(model or ""), "started": time.time(), "app": sent_name(),
              "title": title or label.get("title") or (job.title if job else None),
              "href": href or label.get("href"), "phone": bool(label.get("phone") if phone is None else phone),
              "job": job.id if job else None, "jobkind": job.kind if job else None, "meta": dict(job.meta) if job else None}
@@ -102,7 +125,9 @@ def track(path, model=None, *, title=None, href=None, phone=None):
         yield entry
     finally:
         with _lock:
-            _mine.pop(entry["id"], None)
+            if _mine.pop(entry["id"], None):
+                _ended.append(dict(entry, ended=time.time()))
+                del _ended[:-40]
 
 
 def busy_models() -> set:
@@ -131,7 +156,7 @@ def on_model(model) -> int:
 def app_names(fetch, wanted) -> dict:
     """{app id: name} from the device's app list (KiloCode-Tiiny → KiloCode). `fetch()` returns the list; it's only
     called when an app isn't known yet, and at most every few minutes."""
-    unknown = [a for a in wanted if a and a != "API" and a not in _apps["names"]]
+    unknown = [a for a in wanted if a and a not in ("API", PANEL_APP) and a not in _apps["names"]]
     if unknown and time.time() - _apps["at"] > APPS_EVERY:
         _apps["at"] = time.time()
         try:
@@ -187,14 +212,24 @@ def now(npu, instances, panel_jobs, names, clock=time.time) -> dict:
     tasks = device_tasks(npu)
     with _lock:
         mine = sorted((dict(e) for e in _mine.values()), key=lambda e: e["started"])
-    # pair the panel's requests with the device's anonymous ("API") tasks: same model and kind, closest start
-    free = [d for d in tasks if d["app"] == "API"]
+    # pair the panel's requests with the device's tasks: one under the name the request carried, else an anonymous
+    # ("API") one; the same model and kind, the closest start
+    sent = {e["app"] for e in mine}
+    free = [d for d in tasks if d["app"] == "API" or d["app"] in sent]
     for e in mine:
-        cands = [d for d in free if (not e["model"] or e["model"] == "default" or d["model"] == e["model"])
+        cands = [d for d in free if d["app"] in ("API", e["app"]) and (not e["model"] or e["model"] == "default" or d["model"] == e["model"])
                  and d["kind"] in (None, e["kind"])]
         if cands:
-            d = min(cands, key=lambda d: abs((d["started"] or e["started"]) - e["started"]))
+            d = min(cands, key=lambda d: (d["app"] != e["app"], abs((d["started"] or e["started"]) - e["started"])))
             free.remove(d)
+            d["mine"], e["paired"] = e, True
+    # a task still listed under a name the panel sent, right after that request ended: the panel's too, not another program's
+    with _lock:
+        recent = [dict(e) for e in reversed(_ended) if 0 <= t - e["ended"] <= ENDED_FOR]
+    for d in [d for d in tasks if not d.get("mine") and d["app"] != "API"]:
+        e = next((e for e in recent if not e.get("paired") and e["app"] == d["app"] and d["kind"] in (None, e["kind"])
+                  and (not e["model"] or e["model"] == "default" or d["model"] == e["model"])), None)
+        if e:
             d["mine"], e["paired"] = e, True
     running = [j for j in panel_jobs if j.get("status") == "running" and j.get("kind") not in NOT_DEVICE_JOBS]
     studio = next((j for j in running if j.get("kind") in STUDIO_JOBS), None)
@@ -217,8 +252,8 @@ def now(npu, instances, panel_jobs, names, clock=time.time) -> dict:
         row = {"key": f"dev:{d['app']}:{d['model']}:{d['started']}", "kind": d["kind"] or "other",
                "modality": d["modality"], "model": d["model"], "waiting": d["waiting"],
                "elapsed": max(0.0, t - started) if started and t - started < 7 * 86400 else None}
-        if e:
-            row.update(mine=True, title=e["title"], href=e["href"], phone=e["phone"], **_for_job(e))
+        if e:   # (a request that has just ended isn't a cancelled one: no "stopping")
+            row.update(mine=True, title=e["title"], href=e["href"], phone=e["phone"], **({} if e.get("ended") else _for_job(e)))
         else:
             label = d["label"] if d["label"] and d["label"] != "API" else None
             row.update(mine=False, app=names.get(d["app"]) or label or (None if d["app"] == "API" else d["app"]))

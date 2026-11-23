@@ -188,8 +188,9 @@ MODEL_ARG = {"type": "string", "description": "Optional: a model on the Tiiny (i
 class Toolbox:
     """The tools, and what they need from the panel."""
 
-    def __init__(self, devconn, settings, gallery=None, runtime=None):
+    def __init__(self, devconn, settings, gallery=None, runtime=None, apps=None):
         self.devconn, self.settings, self.gallery, self.rt = devconn, settings, gallery, runtime
+        self.apps = apps   # the gateway's list of apps (gateway.Apps): a tool call counts as a use of its app
         self.tools = [
             Tool("tiiny_ask", "Ask a model on the Tiiny",
                  "Ask a language model that runs on the user's Tiiny, a small AI computer on their desk. Nothing leaves their own "
@@ -266,8 +267,11 @@ class Toolbox:
     def call(self, app, name: str, args: dict) -> dict:
         """Run a tool. Returns an MCP tool result; a tool that couldn't do it answers with isError."""
         tool = self.by_name[name]
+        if self.apps is not None:
+            self.apps.touch(app, request=True)
         try:
-            content, structured = tool.run(app, args or {})
+            with activity.named(gateway.device_name(app)):   # on the Tiiny, the work carries the app's name
+                content, structured = tool.run(app, args or {})
             out = {"content": content, "isError": False}
             if structured is not None:
                 out["structuredContent"] = structured
@@ -342,6 +346,8 @@ class Toolbox:
         max_tokens = max(1, min(8192, int(a.get("max_tokens") or 1024)))
         with self._use(app, model), self._track(app, "/v1/chat/completions", model, "ask"):
             out = device.chat(info, model, messages, thinking=bool(a.get("thinking")), max_tokens=max_tokens, timeout=900)
+        if self.apps is not None:   # the tokens count for the app, like a request it sent to the gateway itself
+            self.apps.touch(app, model, *gateway.usage_of({"usage": out.get("usage")}))
         answer = (out.get("content") or "").strip()
         if not answer:
             answer = "(The model gave no answer; it may have used all its tokens thinking. Try a larger max_tokens, or thinking off.)"

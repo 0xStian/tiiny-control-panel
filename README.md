@@ -43,7 +43,7 @@ only talks to your Tiiny, and nothing goes to the cloud.
 | 🛡️ **Code review** | A model on your device checks a folder for security problems and bugs, with suggested fixes. You see which file it's reading and what it's writing as it goes. Exports as SARIF. |
 | 📚 **Vault** | Upload documents and web pages, then search them by meaning. |
 | 🔌 **Integrations** | Give each app its own key. Apps that speak the OpenAI, Anthropic or Ollama API, and AI assistants like Claude Code and Cursor (MCP), use your Tiiny through the panel; models load when an app needs them and are unloaded again afterwards. Filled-in setups for Claude Code, Cursor, OpenClaw, Hermes Agent, Open WebUI, Continue, Zed and more. |
-| 📈 **Dashboard** | What the device is working on right now and for whom, live NPU, memory and CPU use, history charts, and how fast each model answers. |
+| 📈 **Dashboard** | What the device is working on right now and for whom, live NPU, memory and CPU use, history charts, token usage per day, model and app, and how fast each model answers. |
 | 📱 **Phone and app** | A phone layout, QR-code pairing, install as an app, desktop notifications. |
 | ⚙️ **Device and panel** | Wi-Fi, connectors, account, firmware updates, power, and a real terminal for any `tiiny` command. Backups of the device and of the panel's own data, and updates for the panel itself. |
 
@@ -97,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/0xStian/tiiny-control-panel/main/do
 It ends like this (with your server's address):
 
 ```
-Tiiny Control Panel 1.4.3 is running.
+Tiiny Control Panel 1.5.0 is running.
   Open        https://192.168.1.20:8765/   (or https://nas.local:8765)
   Setup code  K7QM-2XWD
   Your browser warns once: the panel made its own certificate. Choose Advanced, then Continue.

@@ -5,6 +5,52 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-23
+
+### Added
+
+- **Token usage on the Dashboard** ([#2](https://github.com/0xStian/tiiny-control-panel/issues/2)). How much text your
+  models read (prompts) and wrote (answers), for today, 7 days, 4 weeks or all time: the totals, a bar per day, and
+  the same numbers per model and per app.
+  - **Your Tiiny does the counting,** for everything that uses it: this panel, Tiiny's own apps, your apps on
+    Integrations, and programs that call the device directly. The numbers go back to when your Tiiny started counting,
+    so they're there from the first look.
+  - **Per app.** The panel now gives its name with its chat requests (*Tiiny Control Panel*), and requests it passes
+    on for an app carry the app's name from Integrations. That's how your Tiiny tells them apart. What they used
+    before this version is under *No name given*.
+  - **Good to know:** your Tiiny keeps these names in its statistics, and the panel can't remove them there.
+    Embeddings, pictures and speech aren't counted. A Tiiny with older software has no token statistics; the card then
+    says so.
+
+### Changed
+
+- **Chat replies and Integrations show tokens read and written apart.** Under a reply you see how much the model read
+  and how much it wrote, and for an agent's reply how many steps it took: every step reads the conversation again, so a
+  runaway agent shows at once. Each app on Integrations shows the same two numbers.
+- **Restoring a backup into an empty panel ticks "Also restore the panel's settings".** An empty panel is a move to
+  another computer, so its settings come along. A panel with data keeps its own settings unless you tick it.
+
+### Fixed
+
+- **A backup of the panel's data brings your Integrations apps along**
+  ([#6](https://github.com/0xStian/tiiny-control-panel/issues/6)).
+  - **What happened:** the apps on Integrations weren't in a backup. After a move to another computer, Integrations
+    was empty and every app needed a new key.
+  - **Now:** a backup holds the apps: what each may use, its counters and the fingerprint of its key. Restoring it
+    brings them back and their keys work again, so the apps themselves need no change. Integrations' own switches
+    come with them: its port, apps on other computers, and Ollama apps without a key. No key is in a backup, because
+    the panel only keeps fingerprints of app keys.
+  - **The restore dialog** lists the apps by name, with a tick that starts on. **Add what's missing** leaves an app
+    that's already here as it is. **Replace everything** swaps the list, after setting the old one aside with the
+    data.
+  - **Backups from before** still restore, and say they have no apps in them.
+- **Tool calls from AI assistants count for their app.** An app that only used the MCP tools showed "Not used yet" on
+  Integrations with 0 requests. Each tool call now counts as a request, and a question to a model adds its tokens.
+- **Routines are listed where backups are.** They were backed up and restored all along, but neither the card under
+  **System** nor the restore dialog showed them.
+- **A restored routine that was due long ago is skipped** instead of running right after the restore, the same as
+  when the panel starts.
+
 ## [1.4.3] - 2026-11-13
 
 ### Changed
@@ -365,7 +411,8 @@ The first public release.
 - **A safer subset for phones.** No panel settings, terminals, folder browsing, local folders in reviews and projects,
   API key, or fetching local-network addresses.
 
-[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.3...HEAD
+[Unreleased]: https://github.com/0xStian/tiiny-control-panel/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.3...v1.5.0
 [1.4.3]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/0xStian/tiiny-control-panel/compare/v1.4.0...v1.4.1

@@ -637,7 +637,9 @@ function viewChat(root, ctx) {
     const cited = new Set([...String(answer).matchAll(/\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]/g)].flatMap(x => x[1].split(',').map(n => Number(n.trim()))));
     const meta = [];
     if (m.meta?.model) meta.push(shortName(m.meta.model));
-    if (m.meta?.usage?.completion_tokens) meta.push(`${m.meta.usage.completion_tokens} tokens`);
+    const used = m.meta?.usage || {};   // summed over the reply's steps: an agent reads the conversation again at each one
+    if (used.prompt_tokens || used.completion_tokens) meta.push(`${fmtCount(used.prompt_tokens)} tokens read`, `${fmtCount(used.completion_tokens)} written`);
+    if (used.prompt_tokens && m.steps?.length) meta.push(`${m.steps.length} step${m.steps.length === 1 ? '' : 's'}`);
     if (m.meta?.tps) meta.push(`${m.meta.tps.toFixed(1)} tok/s`);
     if (m.meta?.ms) meta.push(`${(m.meta.ms / 1000).toFixed(1)} s`);
     if (m.meta?.stopped) meta.push('stopped');
@@ -660,7 +662,7 @@ function viewChat(root, ctx) {
         shownSources.length && otherSources.length ? h('span', {class: 'faint small'}, `+${otherSources.length} more used as context`) : null) : null,
       m.error ? h('div', {class: 'msg-error'}, m.error) : null,
       (m.notes || []).map(n => h('div', {class: 'msg-note'}, n)),
-      !live ? h('div', {class: 'msg-meta'}, meta.join(' · '),
+      !live ? h('div', {class: 'msg-meta'}, h('span', {title: used.prompt_tokens ? `Read: ${fmtFull(used.prompt_tokens)} tokens, what the model was given (the conversation so far, files, what its tools found). Written: ${fmtFull(used.completion_tokens)} tokens, its thinking and its answer.` : null}, meta.join(' · ')),
         answer ? h('button', {class: 'btn ghost sm', type: 'button', onclick: () => copyText(answer, 'Reply copied')}, icon('copy'), 'Copy') : null,
         answer ? readAloudButton(answer, readKey(m)) : null,
         isLast ? h('button', {class: 'btn ghost sm', type: 'button', onclick: regenerate}, icon('refresh'), 'Regenerate') : null) : null));

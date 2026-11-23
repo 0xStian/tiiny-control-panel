@@ -399,6 +399,35 @@ def ensure_loaded(info, model_id: str, timeout: float = 900, job=None):
     raise DeviceError(f"{model_id} didn't finish loading in time")
 
 
+# -- naming requests ---------------------------------------------------------------------------------------------------
+# The Tiiny keeps its own token statistics, per day, model and app (tiinyui/tokens.py), and lists the work on its models
+# by app (tiinyui/activity.py). A request says which app it's from with a top-level "app_id" field, as Tiiny's own apps
+# do; without one it's counted as "default" and listed as "API". These are the routes that take the field and are
+# counted (measured 2026-11-23 on TiinyOS 0.1.39). /v1/completions takes it too, but the device counts no tokens there.
+NAMED_PATHS = ("/v1/chat/completions", "/v1/responses", "/v1/messages", "/api/chat", "/api/generate")
+NAMING = {"off": False}   # set once a device refuses the field: this run then sends requests as before, without a name
+
+
+def with_name(path: str, body):
+    """`body` for a request to `path`, with the name of who it's for (activity.sent_name) where the device takes one."""
+    if NAMING["off"] or not isinstance(body, dict) or str(path).split("?")[0] not in NAMED_PATHS:
+        return body
+    return dict(body, app_id=activity.sent_name())
+
+
+def name_refused(status, text, body) -> bool:
+    """Did the device turn a request down because of its name? Then the caller sends it again without one, and the
+    panel stops naming its requests until it's restarted."""
+    if status not in (400, 422) or not isinstance(body, dict) or "app_id" not in body:
+        return False
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8", "replace")
+    if "app_id" not in str(text or ""):
+        return False
+    NAMING["off"] = True
+    return True
+
+
 def chat(info, model: str, messages: list, *, thinking=None, max_tokens=None, temperature=None,
          tools=None, timeout: float = 900) -> dict:
     """One non-streaming chat completion. Returns {'content', 'reasoning', 'tool_calls', 'usage', 'finish_reason'}."""
@@ -411,7 +440,13 @@ def chat(info, model: str, messages: list, *, thinking=None, max_tokens=None, te
         body["temperature"] = float(temperature)
     if tools:
         body["tools"] = tools
-    data = call_ok(info, "core", "POST", "/v1/chat/completions", body=body, timeout=timeout) or {}
+    sent = with_name("/v1/chat/completions", body)
+    status, data, text = call(info, "core", "POST", "/v1/chat/completions", body=sent, timeout=timeout)
+    if name_refused(status, text, sent):
+        status, data, text = call(info, "core", "POST", "/v1/chat/completions", body=body, timeout=timeout)
+    if not 200 <= status < 300:
+        raise DeviceError(error_message(data, text, status))
+    data = data or {}
     choice = (data.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
     content = msg.get("content") or ""
@@ -451,7 +486,10 @@ def stream_chat(info, payload: dict, extras: dict = None, *, timeout: float = 60
     can't be reached. `extras` (thinking options) are tried first, then left out if the device rejects them."""
     model = payload.get("model") or "default"
     attempts = [dict(payload, **extras), payload] if extras else [payload]
-    for i, body in enumerate(attempts):
+    named = True   # each attempt carries the name of who it's for, unless the device turns the name itself down
+    i = 0
+    while i < len(attempts):
+        body = with_name("/v1/chat/completions", attempts[i]) if named else attempts[i]
         t_sent = time.time()
         conn, resp = device_open(info, "core", "POST", "/v1/chat/completions", body=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json", "Accept": "text/event-stream"}, timeout=timeout)
@@ -462,7 +500,11 @@ def stream_chat(info, payload: dict, extras: dict = None, *, timeout: float = 60
                     data = json.loads(text)
                 except ValueError:
                     data = None
-                if extras and i == 0 and resp.status in (400, 422):
+                if named and name_refused(resp.status, text, body):
+                    named = False   # the same attempt again, without the name
+                    continue
+                i += 1
+                if extras and i == 1 and resp.status in (400, 422):
                     yield ("info", "The device didn't accept the thinking options, so this reply uses the model's default thinking mode.")
                     continue
                 raise ChatError(f"The device answered HTTP {resp.status}: {error_message(data, text, resp.status)}", resp.status)

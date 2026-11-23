@@ -69,10 +69,16 @@ Only the latest release gets security fixes.
   - **What it never touches:** your data, and any other file in the panel's folder.
   - **Who can do it:** only this computer; phones can't.
 - **Backups without secrets.**
-  - **What's left out:** a backup of the panel's data never contains the browser key, paired phones, the device's API
-    key or a Brave Search key.
-  - **Restoring:** unsafe file names are refused, so nothing is written outside the data folder. What a restore
-    replaces is set aside first.
+  - **What's left out:** a backup of the panel's data never contains the browser key, paired phones, the panel's HTTPS
+    certificate, the device's API key, a Brave Search key or an app's key.
+  - **Apps on Integrations:** they are in a backup with the fingerprint (SHA-256) of each key, which is all the panel
+    itself keeps. A key is 256 random bits, so its fingerprint doesn't give it away. A restored app's key works again,
+    because a key is checked against its fingerprint.
+  - **Restoring:** unsafe file names are refused, so nothing is written outside the data folder. Apps are checked
+    field by field, and one that isn't what it should be is left out. What a restore replaces is set aside first.
+  - **Only restore backups you made.** A backup can add apps, and whoever holds their keys can then use your Tiiny
+    through the panel. It can also add routines, which run on a schedule. The dialog lists both before anything is
+    restored, and the apps can be unticked.
   - **Who can do it:** only this computer.
 - **Apps use their own keys, through the gateway.**
   - **Where:** apps connect to the panel at `127.0.0.1:8766`, not to the device. Only requests with this computer's

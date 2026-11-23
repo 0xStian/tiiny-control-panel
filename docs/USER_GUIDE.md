@@ -207,7 +207,26 @@ another one to make room.
 7. **Loaded models.** Which models are in the NPU's memory, how much each one takes, and buttons to chat with or unload them.
 8. **Quick actions.** Shortcuts: chat, add files, get models, stop all tasks, restart or shut down the device.
 
-Further down the dashboard you'll find **History** (charts of the last 15 minutes to 7 days) and **Speed** (how fast each model answers your chats).
+Further down the dashboard you'll find **History** (charts of the last 15 minutes to 7 days), **Token usage** and **Speed** (how fast each model answers your chats).
+
+**Token usage** shows how much text your models read and wrote. Models count their work in tokens, which are pieces of
+words.
+
+![Token usage](images/token-usage.png)
+
+- **Read and written.** *Read* is what a model was given: your message, the conversation so far, files, and what
+  tools found. *Written* is its thinking and its answer.
+- **Today, 7 days, 4 weeks or All time.** Each shows the totals, a bar per day, and the same numbers per model and
+  per app. **Show the numbers** has the days as a table.
+- **Your Tiiny does the counting,** for everything that uses it: this panel, Tiiny's own apps, your apps on
+  Integrations, and programs that call the device directly. So the numbers also cover what never went through the
+  panel, and they go back to when your Tiiny started counting.
+- **By app.** The panel's own chats, routines and code reviews are *Tiiny Control Panel*. Each app on
+  [Integrations](#integrations) has a row of its own. *No name given* is everything that didn't say who it was. That
+  includes what this panel and your apps used before version 1.5.0, when they didn't give their names yet.
+- **Not counted:** embeddings, pictures and speech.
+- **All time** has totals only: the Tiiny keeps no split into read and written there.
+- **A Tiiny with older software** has no token statistics. The card then says so.
 
 ---
 
@@ -276,7 +295,9 @@ The **⋮** menu (top right of the chat) can:
   voice sounds, and when the models they had to load are unloaded again;
 - clear the chat or delete it.
 
-Under each answer: **Copy**, **Read aloud**, **Regenerate**, and how many tokens it took and how fast.
+Under each answer: **Copy**, **Read aloud**, **Regenerate**, and how many tokens the model read and wrote, and how
+fast. In [agent mode](#agent-mode) the model reads the conversation again at every step, so *read* adds up over the
+steps. A reply that read far more than you'd expect took many steps; the line says how many.
 
 **Replies keep going without the page.** The panel on your computer writes each reply, not the browser tab:
 - **Close the tab, reload, or lock your phone,** and the reply carries on. Open the chat again and it's there, or still
@@ -626,12 +647,17 @@ with its own key. Cloud services can't reach your Tiiny.
 1. **Apps that use your Tiiny.** The gateway's address and whether it's running.
    - **Add an app:** pick the app (Claude Code, Cursor, Open WebUI, …), what it may use and how it loads models. You get
      its key, shown only this once, with the app's setup filled in.
-   - **Each app** shows when it was last used, how much, and what it may use. **Setup** shows its setup again (with a
-     placeholder for the key). Its **⋮** menu edits it, makes a new key, or revokes it.
+   - **Each app** shows when it was last used, how much (requests, and tokens read and written), and what it may use.
+     An AI assistant's tool calls count as requests too. **Setup** shows its setup again (with a placeholder for the
+     key). Its **⋮** menu edits it, makes a new key, or revokes it.
+   - **Use by day and model:** the Dashboard's [Token usage](#the-dashboard) has a row for each app. Your Tiiny tells
+     them apart by the app's name here, which the panel adds to the app's chat requests.
    - **Apps on other computers in your network:** off unless you switch it on. Apps use the address shown, or the
      address and port they reach it by through port mapping or NAT. Names work only in server mode, the same ones as
      for the panel. Without `--tls-cert` and `--tls-key`, keys travel unencrypted through your network.
    - **Ollama apps without a key:** for Ollama apps that can't send one. Only chat and embeddings, only from this computer.
+   - **Moving to another computer:** a backup of the panel's data (**System → Your panel's data**) includes your apps.
+     After you restore it, their keys work as before.
 2. **Test the APIs:** checks the device's OpenAI, Anthropic and Ollama APIs and decision models with one click each.
 3. **Ready-to-copy setups**, filled in with the gateway's address (opened from another computer, with the address you
    reached the panel by and the gateway's port):
@@ -722,15 +748,22 @@ running.
      is running, it tells you first.
    - If the panel's own files were changed on this computer, it doesn't overwrite them. Then update with git yourself.
 4. **Device backup.** Save the device's data (settings, Vault, profile…) as a ZIP file on this computer, or restore one.
-5. **Your panel's data.** What the panel keeps on this computer: chats, projects, meetings, the Gallery and code reviews.
+5. **Your panel's data.** What the panel keeps on this computer: chats, projects, meetings, the Gallery, code reviews
+   and routines, plus the apps on Integrations.
    - **Download a backup** puts all of it in one ZIP file. Tick *Include the performance history* for the dashboard's
-     charts too. API keys and the sign-ins of your browser and phones are never in it.
+     charts too. Keys and the sign-ins of your browser and phones are never in it. Apps come with only the
+     fingerprints of their keys, which is enough for the keys to keep working after a restore.
    - **Restore from a backup…** shows what's in the file, then gives you two choices:
-     - **Add what's missing:** when both have the same item, the newer one wins.
+     - **Add what's missing:** when both have the same item, the newer one wins. An app that's already here stays as
+       it is.
      - **Replace everything.**
 
      Whatever a restore replaces is set aside first, in a `.before-restore-…` folder in `~/.local/share/tiiny-ui/`.
-     Tick *Also restore the panel's settings* when you move to a new computer.
+   - **The apps on Integrations** are restored unless you untick them, together with Integrations' own switches (its
+     port, apps on other computers, Ollama apps without a key).
+   - **Also restore the panel's settings** is ticked for you while the panel is still empty, as on a new computer. A
+     panel with data keeps its own settings unless you tick it.
+   - **A routine that was due long ago** is skipped after a restore, not run at once.
 6. **App and notifications.** Install the panel as an app, get a notification when long tasks finish, add it to your desktop's app menu, or stop the panel.
 7. **Phone and other devices.** See [the next section](#use-it-from-your-phone). In [server mode](#run-it-on-a-home-server-server-mode-and-docker)
    this card is called **Devices**, and lists every signed-in device.
@@ -1085,7 +1118,7 @@ Give full access to your own computers. *Limited* is what a paired phone gets on
 | `.previous/` in the panel's folder | The version from before the last update (only after updating from System → Tiiny Control Panel without git). |
 | `~/.config/tiiny-ui/settings.json` | Panel settings, including measured model sizes. Readable only by you. |
 | `~/.config/tiiny-ui/devices.json` | Paired phones (in server mode, every signed-in device and its access). Only fingerprints of their logins are stored, so the file can't be used to log in. |
-| `~/.config/tiiny-ui/apps.json` | The apps that may use the gateway, with what they may use. Only fingerprints of their keys are stored. |
+| `~/.config/tiiny-ui/apps.json` | The apps that may use the gateway, with what they may use. Only fingerprints of their keys are stored. A backup of the panel's data includes it. |
 | `~/.config/tiiny-ui/tls/` | The panel's own HTTPS certificate and its key (for phones and server mode). The key is readable only by you. Delete the folder to make a new one. |
 | `~/.config/tiiny-ui/browser-key` | The secret the panel signs your browser in with. Readable only by you. Delete it and restart the panel to sign every browser out. |
 | `~/.local/tiiny/config.json` | The command-line tool's device address and API key. The panel only reads it. |
@@ -1103,6 +1136,9 @@ Give full access to your own computers. *Limited* is what a paired phone gets on
 - **It only runs what you started it to run.** The `tiiny` tool it uses, and whether the agent may run commands
   (`--allow-commands`, which then asks before each one), can only be set when starting it, never from the page.
 - **The API key stays hidden.** It stays inside the panel's server; the page only shows it when you press **Reveal**.
+- **Names on your Tiiny.** Chat requests carry a name, so your Tiiny can count tokens per app: *Tiiny Control Panel*
+  for the panel's own, and an app's name from Integrations for that app's. Your Tiiny keeps these names in its token
+  statistics, and the panel can't remove them there. They never leave your Tiiny through the panel.
 - **Phones need pairing.** The phone listener is off until you turn it on, unpaired devices get nothing, and paired phones can't reach your computer's files, settings or terminals.
 
 ---
@@ -1246,10 +1282,14 @@ You can also start the panel with `--verbose`.
   picks up where it left off. While a reply is written, only the panel changes that chat's messages; a page with an
   older copy can't overwrite them.
 - **Routines.** One runner in the panel looks every 30 seconds for routines that are due, and runs one at a time.
-- **Who is using the device.** The Tiiny lists the work running on its models, but every program that doesn't name
-  itself, this panel included, shows there as "API". So the panel keeps a note of its own requests while they run (which
-  chat, page or job they're for) and matches them to the device's list. That's how **Right now** on the dashboard can
-  name them. The notes are kept in memory only.
+- **Who is using the device.** The Tiiny lists the work running on its models by app, and counts tokens the same way.
+  A program says who it is with a name in its request; one that doesn't shows as "API". The panel names its chat
+  requests *Tiiny Control Panel*, and the ones it passes on for an app carry the app's name from Integrations. A name
+  only says who asked, so the panel also keeps a note of its own requests while they run (which chat, page or job
+  they're for) and matches them to the device's list. That's how **Right now** on the dashboard can name them. The
+  notes are kept in memory only.
+- **Token usage** comes from the Tiiny's own statistics, which the panel only reads. If a Tiiny ever turns a request
+  down because of its name, the panel sends it again without one and stops naming requests until it's restarted.
 - **Making room in NPU memory.** One planner decides whether a model fits, and what could be unloaded to make room.
   It counts two ways: the memory the NPU card really has in use, and the shares the Tiiny lists for each model, which
   it keeps at 100% at most. The page, background jobs, routines, apps and tools all ask it, and models load one at a
@@ -1264,6 +1304,9 @@ You can also start the panel with `--verbose`.
 - **Updating:** use **System → Tiiny Control Panel**, or `git pull` if you cloned it.
 - **Your data:** it stays in `~/.local/share/tiiny-ui/`, so it's still there after you move or update the panel.
 - **A new computer:** download a backup under **System → Your panel's data** and restore it on the new computer.
+  Your chats, projects, routines, settings and Integrations apps come along, and the apps' keys keep working. Three
+  things are left to do by hand: log in to your Tiiny again, pair your phones again, and give apps on other computers
+  the new computer's address.
 
 **Removing it:**
 1. Delete the panel's folder.

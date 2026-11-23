@@ -4,15 +4,19 @@ The device's backup only covers what's on the Tiiny. This one covers what the pa
 ~/.local/share/tiiny-ui/:
   * chats;
   * projects, with their files and search indexes;
-  * meetings, the Gallery, code reviews and Studio jobs;
+  * meetings, the Gallery, code reviews, routines and Studio jobs;
   * the performance history, if you ask for it.
-The panel's settings come along without their secrets.
+Two things come along from the config folder: the panel's settings, without their secrets, and the apps on Integrations
+(apps.json: what each may use, its counters and the fingerprint of its key). A restored app's key works again, because a
+key is checked against its fingerprint; the key itself isn't in the backup, and isn't kept anywhere by the panel.
 
-It never contains sign-in secrets (the browser key, paired phones) or API keys (the device's, Brave Search's).
+It never contains sign-in secrets (the browser key, paired phones), a key of any kind (the device's, Brave Search's,
+an app's) or the panel's HTTPS certificate.
 
 Restoring either adds what's missing (the default; when both have the same item, the newer one wins) or replaces
 everything. Anything a restore would overwrite is first moved to .before-restore-<time>/ in the data folder, so it
-can be undone. Performance history is only ever added: days the panel already has stay as they are.
+can be undone. Performance history is only ever added: days the panel already has stay as they are. Apps are restored
+together with Integrations' own settings (APP_SETTINGS), so a move to another computer brings Integrations as it was.
 """
 
 from __future__ import annotations
@@ -34,12 +38,16 @@ KIND = "tiiny-control-panel/panel-data"
 FORMAT = 1
 SECRET_SETTINGS = ("api_key", "search_brave_key")   # never written to a backup
 STARTUP_SETTINGS = ("tiiny_bin", "cli_config")       # only set when starting the panel
+APP_SETTINGS = ("gateway_enabled", "gateway_port", "gateway_lan", "gateway_keyless_ollama")   # restored with the apps
+APPS_FILE = "apps.json"                              # the apps on Integrations, at the ZIP's root
+MAX_APPS_FILE = 4 * 1024 ** 2
+ROOT_FILES = ("manifest.json", "settings.json", APPS_FILE)
 STORED = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".mp4", ".m4a", ".ogg", ".opus", ".webm", ".glb", ".zip",
           ".gz", ".flac", ".mov"}                    # already compressed: stored as they are
 METRICS_FILE = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl")
 MAX_UNPACKED = 64 * 1024 ** 3
 NAMES = {"chats": "chats", "projects": "projects", "gallery": "Gallery items", "meetings": "meetings",
-         "reviews": "code reviews", "studio": "Studio jobs"}
+         "reviews": "code reviews", "routines": "routines", "studio": "Studio jobs"}
 
 
 def _files(d: Path):
@@ -72,8 +80,8 @@ def clean_settings(settings) -> dict:
     return {k: settings.get(k) for k in settings.FIELDS if k not in SECRET_SETTINGS + STARTUP_SETTINGS}
 
 
-def export(store, settings, out_path, *, metrics=False, job=None) -> dict:
-    """Write the backup ZIP to `out_path`. Returns its manifest."""
+def export(store, settings, out_path, *, metrics=False, apps=None, job=None) -> dict:
+    """Write the backup ZIP to `out_path`. `apps` is the gateway's list of apps (gateway.Apps). Returns its manifest."""
     root = store.root
     entries = []
     counts = {}
@@ -86,12 +94,17 @@ def export(store, settings, out_path, *, metrics=False, job=None) -> dict:
     if metrics:
         entries += [("metrics", p) for p in _files(root / "metrics") if METRICS_FILE.fullmatch(p.name)]
     total = sum(p.stat().st_size for _, p in entries) or 1
+    app_list = apps.export_all() if apps is not None else None
     manifest = {"kind": KIND, "format": FORMAT, "version": VERSION, "created": time.time(), "collections": counts,
                 "metrics": bool(metrics), "settings": True}
+    if app_list is not None:
+        manifest["apps"] = len(app_list)
     done, last = 0, 0.0
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         z.writestr("manifest.json", json.dumps(manifest, indent=2))
         z.writestr("settings.json", json.dumps(clean_settings(settings), indent=2))
+        if app_list is not None:
+            z.writestr(APPS_FILE, json.dumps({"apps": app_list}, indent=1))
         for coll, p in entries:
             if job:
                 job.check()
@@ -143,7 +156,7 @@ def _plan(z: zipfile.ZipFile) -> dict:
     records, metrics, skipped, size = {}, [], 0, 0
     for i in z.infolist():
         name = i.filename
-        if name.endswith("/") or name in ("manifest.json", "settings.json"):
+        if name.endswith("/") or name in ROOT_FILES:
             continue
         parts = name.split("/")
         if name.startswith("/") or not _safe_parts(parts) or stat.S_ISLNK((i.external_attr >> 16) & 0o177777):
@@ -176,8 +189,24 @@ def _plan(z: zipfile.ZipFile) -> dict:
     return {"records": records, "metrics": metrics, "skipped": skipped, "size": size}
 
 
-def inspect(store, path) -> dict:
-    """What a backup holds and how much of it is here already."""
+def _apps_in(z: zipfile.ZipFile):
+    """The backup's list of apps; None when it has none (a backup made before the panel put them in)."""
+    try:
+        info = z.getinfo(APPS_FILE)
+    except KeyError:
+        return None
+    if info.file_size > MAX_APPS_FILE:
+        raise BadRequest("The backup's list of apps is larger than the panel accepts, so nothing was restored.")
+    try:
+        data = json.loads(z.read(info))
+    except ValueError:
+        return None
+    found = data.get("apps") if isinstance(data, dict) else None
+    return found if isinstance(found, list) else None
+
+
+def inspect(store, path, apps=None) -> dict:
+    """What a backup holds and how much of it is here already. `apps` is the gateway's list of apps (gateway.Apps)."""
     with _open(path) as z:
         man = _manifest(z)
         plan = _plan(z)
@@ -186,8 +215,13 @@ def inspect(store, path) -> dict:
             recs = plan["records"].get(coll, {})
             here = sum(1 for rid in recs if (store.root / coll / f"{rid}.json").exists())
             cols[coll] = {"records": len(recs), "here": here, "name": NAMES.get(coll, coll)}
+        found = _apps_in(z)
+        listed = None
+        if found is not None:
+            names = [str(a.get("name") or "")[:60] for a in found if isinstance(a, dict) and a.get("name")]
+            listed = {"count": len(found), "here": apps.known(found) if apps is not None else 0, "names": names[:12]}
         return {"created": man.get("created"), "version": man.get("version"), "collections": cols,
-                "metrics": len(plan["metrics"]), "settings": "settings.json" in z.namelist(),
+                "metrics": len(plan["metrics"]), "settings": "settings.json" in z.namelist(), "apps": listed,
                 "skipped": plan["skipped"], "bytes": plan["size"]}
 
 
@@ -209,17 +243,23 @@ def _write(z: zipfile.ZipFile, info, target: Path):
     os.replace(tmp, target)
 
 
-def restore(store, settings, path, *, mode="merge", with_settings=False, job=None) -> dict:
+def restore(store, settings, path, *, mode="merge", with_settings=False, apps=None, with_apps=False, job=None) -> dict:
     """Restore a backup: "merge" adds what's missing (the newer copy wins), "replace" swaps all the data for it.
-    What it overwrites is moved to .before-restore-<time>/ first."""
+    What it overwrites is moved to .before-restore-<time>/ first. `with_apps` also restores the apps on Integrations
+    into `apps` (gateway.Apps), together with Integrations' own settings."""
     if mode not in ("merge", "replace"):
         raise BadRequest("Choose to add what's missing or to replace everything.")
     root = store.root
-    aside = root / f".before-restore-{time.strftime('%Y%m%d-%H%M%S')}"
+    stamp, n = time.strftime("%Y%m%d-%H%M%S"), 1
+    aside = root / f".before-restore-{stamp}"
+    while aside.exists():   # a second restore within the same second gets a folder of its own
+        n += 1
+        aside = root / f".before-restore-{stamp}-{n}"
     added = replaced = kept = 0
     with _open(path) as z:
         _manifest(z)
         plan = _plan(z)
+        found = _apps_in(z) if with_apps and apps is not None else None   # read first: it can refuse the whole backup
         free = shutil.disk_usage(root).free
         if plan["size"] * 1.05 + 200 * 1024 ** 2 > free:
             raise BadRequest(f"There isn't enough free disk space to restore this backup "
@@ -271,15 +311,27 @@ def restore(store, settings, path, *, mode="merge", with_settings=False, job=Non
             if not target.exists():
                 _write(z, info, target)
                 history += 1
-        settings_done = False
-        if with_settings and "settings.json" in z.namelist():
+        saved = None   # the backup's settings, without the ones a restore never sets
+        if "settings.json" in z.namelist():
             try:
                 data = json.loads(z.read("settings.json"))
             except ValueError:
-                data = {}
+                data = None
             if isinstance(data, dict):
-                settings.update({k: v for k, v in data.items()
-                                 if k in settings.FIELDS and k not in SECRET_SETTINGS + STARTUP_SETTINGS})
-                settings_done = True
+                saved = {k: v for k, v in data.items() if k in settings.FIELDS and k not in SECRET_SETTINGS + STARTUP_SETTINGS}
+        apps_done = None
+        if found is not None:
+            if mode == "replace" and apps.path.exists():   # like the data: what's replaced can be put back by hand
+                aside.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(apps.path, aside / APPS_FILE)
+                os.chmod(aside / APPS_FILE, 0o600)
+            apps_done = apps.restore(found, mode)
+        settings_done = bool(with_settings and saved is not None)
+        changes = dict(saved) if settings_done else {}
+        if apps_done is not None and saved and not settings_done:   # Integrations as it was: its switches go with its apps
+            changes = {k: v for k, v in saved.items() if k in APP_SETTINGS}
+        if changes:
+            settings.update(changes)
     return {"added": added, "replaced": replaced, "kept": kept, "history_days": history, "settings": settings_done,
+            "apps": apps_done, "gateway": any(k in changes for k in APP_SETTINGS),
             "skipped": plan["skipped"], "aside": str(aside) if aside.exists() else None}
