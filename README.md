@@ -84,6 +84,23 @@ Your browser opens the panel at **http://127.0.0.1:8765**, already signed in. Th
 
 The [user guide](docs/USER_GUIDE.md) walks through every page.
 
+## Desktop app
+
+Prefer a regular app to a browser tab? This repository also ships a desktop
+app ([app/](app/README.md)): one window that starts the panel next to it, plus
+a menu-bar icon. It's the same panel — same pages, same data, same sign-in.
+
+Prebuilt apps are in the [releases](https://github.com/0xStian/tiiny-control-panel/releases):
+Linux AppImages for x86-64 and 64-bit ARM (the Linux builds target Ubuntu
+24.04, so a fairly recent distro — roughly 2024 or newer — is needed to run
+them). Every push updates a "Latest" release; a version tag adds the assets
+to that version's release, next to the Docker image.
+
+The app opens a window, so it wants a screen — on a headless machine use the
+browser or Docker install instead. Windows isn't supported yet (the in-page
+terminal needs a Unix terminal); the recipe in [app/](app/README.md) builds
+the same app yourself.
+
 ## Run it on a home server
 
 The panel can also run all the time on a home server, a NAS or a Raspberry Pi, and you open it from your laptop and

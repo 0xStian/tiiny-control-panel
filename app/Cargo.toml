@@ -1,0 +1,18 @@
+[package]
+name = "tiiny-control-panel-app"
+version = "1.4.3"
+description = "A native window for the Tiiny Control Panel"
+license = "MIT"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
